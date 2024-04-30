@@ -26,15 +26,15 @@ impl Direction {
 
 #[derive(Debug)]
 struct State {
-    stack: Vec<u8>,
-    control_stack: Vec<u8>,
+    stack: Vec<i64>,
+    control_stack: Vec<i64>,
     location: (usize, usize),
     direction: Direction,
-    output_stack: Vec<u8>,
-    direction_reversed: bool,
+    output_stack: Vec<i64>,
+    direction_reversed: bool, // TODO:
     inverse_mode: bool,
     ascii_mode: bool,
-    current_number: Option<u32>,
+    current_number: Option<i64>,
     code: Array2D<char>,
 }
 
@@ -90,7 +90,7 @@ impl State {
             if *char == '"' {
                 self.ascii_mode = false;
             } else {
-                self.stack.push(*char as u8)
+                self.stack.push(*char as i64)
             }
             return;
         }
@@ -98,7 +98,7 @@ impl State {
         let instruction = self.get_instruction(self.location);
         match instruction {
             '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
-                let new_digit = instruction.to_digit(10).unwrap();
+                let new_digit = instruction.to_digit(10).unwrap() as i64;
                 self.current_number = match self.current_number {
                     None => Some(new_digit),
                     Some(num) => Some(num * 10 + new_digit),
@@ -107,7 +107,7 @@ impl State {
             }
             _ => {
                 if let Some(number) = self.current_number {
-                    *self.stack.last_mut().unwrap() ^= number as u8;
+                    *self.stack.last_mut().unwrap() ^= number;
                     self.current_number = None;
                 }
             }
@@ -184,7 +184,7 @@ impl State {
             'w' => {
                 let x = self.pop();
                 self.output_stack.push(x);
-                print!("{}", x as char);
+                print!("{}", x as u8 as char);
             }
             // Read a character from stdin to the top of stack
             'r' => todo!(),
@@ -268,14 +268,14 @@ impl State {
             '{' => {
                 let x = self.stack.pop().expect("empty stack");
                 let y = self.stack.pop().expect("empty stack");
-                self.stack.push(y.rotate_left(x.into()));
+                self.stack.push(y.rotate_left(x as u32));
                 self.stack.push(x);
             }
             // Rotate "y" to the right "x" bits
             '}' => {
                 let x = self.stack.pop().expect("empty stack");
                 let y = self.stack.pop().expect("empty stack");
-                self.stack.push(y.rotate_right(x.into()));
+                self.stack.push(y.rotate_right(x as u32));
                 self.stack.push(x);
             }
 
@@ -435,17 +435,17 @@ impl State {
             '>' => match self.direction {
                 Direction::North => {
                     self.direction = Direction::East;
-                    self.control_stack.push(!self.inverse_mode as u8);
+                    self.control_stack.push(!self.inverse_mode as i64);
                 }
                 Direction::South => {
                     self.direction = Direction::East;
-                    self.control_stack.push(self.inverse_mode as u8);
+                    self.control_stack.push(self.inverse_mode as i64);
                 }
                 Direction::West => {
                     let dir = self.control_stack.pop();
-                    if dir == Some(self.inverse_mode as u8) {
+                    if dir == Some(self.inverse_mode as i64) {
                         self.direction = Direction::South;
-                    } else if dir == Some(!self.inverse_mode as u8) {
+                    } else if dir == Some(!self.inverse_mode as i64) {
                         self.direction = Direction::North;
                     } else {
                         panic!("invalid value in control stack");
@@ -464,17 +464,17 @@ impl State {
             '<' => match self.direction {
                 Direction::North => {
                     self.direction = Direction::West;
-                    self.control_stack.push(self.inverse_mode as u8);
+                    self.control_stack.push(self.inverse_mode as i64);
                 }
                 Direction::South => {
                     self.direction = Direction::West;
-                    self.control_stack.push(!self.inverse_mode as u8);
+                    self.control_stack.push(!self.inverse_mode as i64);
                 }
                 Direction::East => {
                     let dir = self.control_stack.pop();
-                    if dir == Some(self.inverse_mode as u8) {
+                    if dir == Some(self.inverse_mode as i64) {
                         self.direction = Direction::North;
-                    } else if dir == Some(!self.inverse_mode as u8) {
+                    } else if dir == Some(!self.inverse_mode as i64) {
                         self.direction = Direction::South;
                     } else {
                         panic!("invalid value in control stack");
@@ -493,17 +493,17 @@ impl State {
             'v' => match self.direction {
                 Direction::East => {
                     self.direction = Direction::South;
-                    self.control_stack.push(!self.inverse_mode as u8);
+                    self.control_stack.push(!self.inverse_mode as i64);
                 }
                 Direction::West => {
                     self.direction = Direction::South;
-                    self.control_stack.push(self.inverse_mode as u8);
+                    self.control_stack.push(self.inverse_mode as i64);
                 }
                 Direction::North => {
                     let dir = self.control_stack.pop();
-                    if dir == Some(self.inverse_mode as u8) {
+                    if dir == Some(self.inverse_mode as i64) {
                         self.direction = Direction::West;
-                    } else if dir == Some(!self.inverse_mode as u8) {
+                    } else if dir == Some(!self.inverse_mode as i64) {
                         self.direction = Direction::East;
                     } else {
                         panic!("invalid value in control stack");
@@ -522,17 +522,17 @@ impl State {
             '^' => match self.direction {
                 Direction::East => {
                     self.direction = Direction::North;
-                    self.control_stack.push(self.inverse_mode as u8);
+                    self.control_stack.push(self.inverse_mode as i64);
                 }
                 Direction::West => {
                     self.direction = Direction::North;
-                    self.control_stack.push(!self.inverse_mode as u8);
+                    self.control_stack.push(!self.inverse_mode as i64);
                 }
                 Direction::South => {
                     let dir = self.control_stack.pop();
-                    if dir == Some(self.inverse_mode as u8) {
+                    if dir == Some(self.inverse_mode as i64) {
                         self.direction = Direction::East;
-                    } else if dir == Some(!self.inverse_mode as u8) {
+                    } else if dir == Some(!self.inverse_mode as i64) {
                         self.direction = Direction::West;
                     } else {
                         panic!("invalid value in control stack");
@@ -549,7 +549,7 @@ impl State {
         }
     }
 
-    fn pop(&mut self) -> u8 {
+    fn pop(&mut self) -> i64 {
         self.stack
             .pop()
             .expect("should not pop when stack is empty")
@@ -561,7 +561,7 @@ impl State {
 
     fn end(&mut self) -> ! {
         for char in self.output_stack.iter() {
-            print!("{}", *char as char);
+            print!("{}", *char as u8 as char);
         }
         std::process::exit(0);
     }
