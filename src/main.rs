@@ -5,6 +5,13 @@ use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::Path;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum InfoLevel {
+    AtCompletion,
+    Live,
+    Debug,
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Direction {
     North,
@@ -35,11 +42,19 @@ struct State {
     inverse_mode: bool,
     ascii_mode: bool,
     current_number: Option<i64>,
+
+    // constants
+    info_level: InfoLevel,
     code: Array2D<char>,
 }
 
 impl State {
-    fn new(code: Array2D<char>) -> Self {
+    fn new<P>(path: P, info_level: InfoLevel) -> Self
+    where
+        P: AsRef<Path>,
+    {
+        let code = read_lines(path);
+
         let mut start: Option<(usize, usize)> = None;
         for (index_y, mut row) in code.rows_iter().enumerate() {
             if let Some(index_x) = row.position(|x| *x == '@') {
@@ -47,7 +62,7 @@ impl State {
                 break;
             }
         }
-        // TODO: check for more than one start pos?
+        // TODO: check for more than one start pos and crash?
         match start {
             None => panic!("No start position"),
             Some(location) => Self {
@@ -60,6 +75,8 @@ impl State {
                 inverse_mode: false,
                 ascii_mode: false,
                 current_number: None,
+
+                info_level,
                 code,
             },
         }
@@ -77,13 +94,15 @@ impl State {
 
         self.location = Direction::step_location(self.direction, self.location);
 
-        /*println!(
-            "{}, {:?}, {:?}, {}",
-            self.get_instruction(self.location),
-            self.stack,
-            self.control_stack,
-            self.inverse_mode
-        );*/
+        if self.info_level == InfoLevel::Debug {
+            println!(
+                "{}, {:?}, {:?}, {}",
+                self.get_instruction(self.location),
+                self.stack,
+                self.control_stack,
+                self.inverse_mode
+            );
+        }
 
         if self.ascii_mode {
             let char = self.get_instruction(self.location);
@@ -183,8 +202,10 @@ impl State {
             // Write the top item to stdout as a character
             'w' => {
                 let x = self.pop();
+                if self.info_level == InfoLevel::Live {
+                    print!("{}", x as u8 as char);
+                }
                 self.output_stack.push(x);
-                print!("{}", x as u8 as char);
             }
             // Read a character from stdin to the top of stack
             'r' => todo!(),
@@ -403,7 +424,9 @@ impl State {
             }
             // Enter string mode
             '"' => self.ascii_mode = true,
-            // THIS IS WRONG, IT TRIGGERS INVERSE MODE. Toggle reverse mode
+            // Toggle inverse mode
+            // the doc says "toggle reverse mode", which doesn't make any sense, as a reverse
+            // mode toggle would just undo the whole program back to the start
             '?' => self.inverse_mode = !self.inverse_mode,
             // Halt. Also signals the entrance point for the program
             '@' => self.end(),
@@ -560,16 +583,18 @@ impl State {
     }
 
     fn end(&mut self) -> ! {
-        for char in self.output_stack.iter() {
-            print!("{}", *char as u8 as char);
+        if self.info_level == InfoLevel::AtCompletion {
+            for char in self.output_stack.iter() {
+                print!("{}", *char as u8 as char);
+            }
         }
         std::process::exit(0);
     }
 }
 
 fn main() {
-    let x = read_lines("primes2");
-    let mut state = State::new(x);
+    let filename: String = text_io::read!();
+    let mut state = State::new(filename, InfoLevel::Debug);
     loop {
         state.step();
     }
