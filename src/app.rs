@@ -3,6 +3,7 @@ use array2d::{Array2D, Error};
 use egui::Context;
 use std::future::Future;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::time::{Duration, Instant};
 
 // for file read
 use std::fs::File;
@@ -54,6 +55,9 @@ struct State {
 pub struct AppState {
     state: State,
     speed: f32,
+    cursor_position: (usize, usize),
+    paused: bool,
+    previous_instant: Instant,
     text_channel: (Sender<String>, Receiver<String>),
 }
 
@@ -67,6 +71,9 @@ impl AppState {
             //state: State::new_empty(),
             state: State::new_load_file("primes1"),
             text_channel: channel(),
+            cursor_position: (0, 0),
+            previous_instant: Instant::now(),
+            paused: true,
             speed: 5.0,
         }
     }
@@ -81,6 +88,8 @@ impl eframe::App for AppState {
         if let Ok(text) = self.text_channel.1.try_recv() {
             self.state = State::new_from_string(text);
         }
+
+
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
@@ -129,18 +138,63 @@ impl eframe::App for AppState {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+
+            let time_per_step = Duration::from_millis(((11.0 - self.speed) * 10.0) as u64); 
+            if !self.paused {
+                if self.previous_instant.elapsed() >= time_per_step {
+                    self.state.step();
+                    self.previous_instant = Instant::now();
+                }
+                
+                ui.ctx().request_repaint_after(time_per_step);
+            }
+
             // The central panel the region left after adding TopPanel's and SidePanel's
             ui.heading("Befreak interpreter");
 
-            ui.add(egui::Slider::new(&mut self.speed, 0.0..=10.0).text("speed"));
+            ui.horizontal(|ui| {
+                if ui.button("step").clicked() {
+                    self.state.step();
+                };
+                if ui.button(if self.paused {"unpause"} else {"pause"}).clicked() {
+                    self.paused = !self.paused;
+                };
+                ui.add(egui::Slider::new(&mut self.speed, 1.0..=10.0).text("speed"));
+            });
 
             ui.separator();
 
-            egui::Grid::new("letter_grid").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("output");
+                let output = &self.state.output_stack.iter().map(|x| *x as u8 as char).collect::<String>();
+                ui.label(output);
+                
+                ui.separator();
+                ui.label("primary stack");
+                for value in &self.state.stack {
+                    ui.label(value.to_string());
+                }
+
+                ui.separator();
+                ui.label("control stack");
+                for value in &self.state.control_stack {
+                    ui.label(value.to_string());
+                }
+
+
+            });
+
+            ui.separator();
+
+            egui::Grid::new("letter_grid").spacing([0.0,0.0]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                for row in self.state.code.rows_iter() {
-                    for c in row {
-                        ui.label(c.to_string());
+                for (index_y, row) in self.state.code.rows_iter().enumerate() {
+                    for (index_x, c) in row.enumerate() {
+                        if self.state.location == (index_x, index_y) {
+                            ui.label(egui::RichText::new(*c).background_color(egui::Color32::RED));
+                        } else {
+                            ui.label(c.to_string());
+                        }
                     }
                     ui.end_row()
                 }
@@ -149,7 +203,7 @@ impl eframe::App for AppState {
             ui.separator();
 
             ui.add(egui::github_link_file!(
-                "https://github.com/emilk/eframe_template/blob/main/",
+                "github.com/PartyWumpus/befreak-interpreter",
                 "Source code."
             ));
 
@@ -170,6 +224,11 @@ fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
         ui.hyperlink_to(
             "eframe",
             "https://github.com/emilk/egui/tree/master/crates/eframe",
+        );
+        ui.label(". Built from the ");
+        ui.hyperlink_to(
+            "eframe template",
+            "https://github.com/emilk/eframe_template/blob/main/",
         );
         ui.label(".");
     });
