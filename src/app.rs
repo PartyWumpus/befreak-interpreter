@@ -10,13 +10,6 @@ use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::Path;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum InfoLevel {
-    AtCompletion,
-    Live,
-    Debug,
-}
-
 #[derive(Clone, Copy, Debug)]
 enum Direction {
     North,
@@ -25,14 +18,33 @@ enum Direction {
     West,
 }
 
-impl Direction {
-    const fn step_location(direction: Self, location: (usize, usize)) -> (usize, usize) {
-        match direction {
-            Direction::North => (location.0, location.1 - 1),
-            Direction::South => (location.0, location.1 + 1),
-            Direction::East => (location.0 + 1, location.1),
-            Direction::West => (location.0 - 1, location.1),
-        }
+#[derive(Debug, PartialEq)]
+enum BefreakError {
+    InvalidPosition,
+    EmptyMainStack,
+    EmptyControlStack,
+    EmptyOutputStack,
+    NonBoolInControlStack,
+    InvalidUnduplicate,
+    InvalidPopZero,
+    InvalidUnder,
+}
+
+impl std::error::Error for BefreakError {}
+
+impl std::fmt::Display for BefreakError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str = match self {
+            Self::InvalidPosition => "Attempted to enter a position outside the grid",
+            Self::EmptyMainStack => "Attempted to pop off the stack but it was empty",
+            Self::EmptyControlStack => "Attempted to pop off the control stack but it was empty",
+            Self::EmptyOutputStack => "Attempted to pop off the output stack but it was empty",
+            Self::NonBoolInControlStack => "Tried to use the control stack but a non boolean value was at the top",
+            Self::InvalidUnduplicate => "Tried to unduplicate the top two values but they were not identical",
+            Self::InvalidPopZero => "Tried to pop a value off the stack but it was not a zero",
+            Self::InvalidUnder => "Tried to do under but the top and third values were not identical",
+        };
+        write!(f, "{}", str)
     }
 }
 
@@ -46,7 +58,7 @@ struct State {
     direction_reversed: bool, // TODO:
     inverse_mode: bool,
     ascii_mode: bool,
-    current_number: Option<i64>,
+    number_stack: Vec<char>,
 
     step: u64,
 
@@ -60,6 +72,8 @@ pub struct AppState {
     cursor_position: (usize, usize),
     paused: bool,
     previous_instant: Instant,
+    extra: bool,
+    error: Option<BefreakError>,
     text_channel: (Sender<String>, Receiver<String>),
 }
 
@@ -76,8 +90,29 @@ impl AppState {
             cursor_position: (0, 0),
             previous_instant: Instant::now(),
             paused: true,
+            extra: false,
+            error: None,
             speed: 5.0,
         }
+    }
+}
+
+impl AppState {
+    fn handle_err(&mut self, err: Result<(), BefreakError>) {
+        match err {
+            Ok(..) => return,
+            Err(err) => self.error = Some(err),
+        }
+    }
+
+    fn step(&mut self) {
+        let x = self.state.step();
+        self.handle_err(x);
+    }
+
+    fn reverse_direction(&mut self) {
+        let x = self.state.reverse_direction();
+        self.handle_err(x);
     }
 }
 
@@ -138,10 +173,14 @@ impl eframe::App for AppState {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let time_per_step = Duration::from_millis(((11.0 - self.speed) * 1.0) as u64);
-            if !self.paused {
+            let time_per_step = Duration::from_millis((500.0 - 49.0 * self.speed) as u64);
+            if !self.paused && self.error == None {
                 if self.previous_instant.elapsed() >= time_per_step {
-                    self.state.step();
+                    if self.speed == 10.00 {
+                        // if speed is max, go double speed
+                        self.step();
+                    }
+                    self.step();
                     self.previous_instant = Instant::now();
                 }
 
@@ -153,18 +192,24 @@ impl eframe::App for AppState {
                 ui.heading("Befreak interpreter");
                 ui.label("step: ");
                 ui.label(self.state.step.to_string());
+                if let Some(error) = &self.error {
+                    ui.label(egui::RichText::new(error.to_string()).color(egui::Color32::RED));
+                };
             });
 
             ui.horizontal(|ui| {
                 if ui.button("step").clicked() {
-                    self.state.step();
+                    self.step();
                 };
                 if ui
                     .button(if self.paused { "unpause" } else { "pause" })
-                    .clicked()
+                    .clicked() && self.error == None
                 {
                     self.paused = !self.paused;
                 };
+                if ui.button("reverse").clicked() {
+                    self.reverse_direction();
+                }
                 ui.add(egui::Slider::new(&mut self.speed, 1.0..=10.0).text("speed"));
             });
 
@@ -186,17 +231,17 @@ impl eframe::App for AppState {
                     cols[1].vertical_centered_justified(|ui| {
                         ui.label("primary stack");
                         ui.horizontal(|ui| {
-                        for value in self.state.stack.iter() {
-                            ui.label(value.to_string());
-                        }
+                            for value in self.state.stack.iter() {
+                                ui.label(value.to_string());
+                            }
                         })
                     });
                     cols[2].vertical_centered_justified(|ui| {
                         ui.label("control stack");
                         ui.horizontal(|ui| {
-                        for value in self.state.control_stack.iter() {
-                            ui.label(value.to_string());
-                        }
+                            for value in self.state.control_stack.iter() {
+                                ui.label(value.to_string());
+                            }
                         })
                     });
                 });
@@ -235,6 +280,8 @@ impl eframe::App for AppState {
             });
         });
     }
+
+
 }
 
 fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
@@ -267,7 +314,7 @@ impl Default for State {
             direction_reversed: false,
             inverse_mode: false,
             ascii_mode: false,
-            current_number: None,
+            number_stack: vec![],
             step: 0,
             code: Array2D::filled_with(' ', 10, 10),
         }
@@ -340,58 +387,96 @@ impl State {
         start
     }
 
-    fn get_instruction(&self, location: (usize, usize)) -> &char {
-        return self
-            .code
-            .get(location.1, location.0)
-            .expect("position should not exit the code");
+    fn get_instruction(&self, location: (usize, usize)) -> Result<&char, BefreakError> {
+        match self.code.get(location.1, location.0) {
+            None => Err(BefreakError::InvalidPosition),
+            Some(char) => Ok(char),
+        }
     }
 
-    fn step(&mut self) {
+    // TODO: fix reversing while processing a number
+    // easiest solution is making it into a stack so stuff can just be popped off like everywhere
+    // else :)
+    fn reverse_direction(&mut self) -> Result<(), BefreakError> {
+        self.direction_reversed = !self.direction_reversed;
+        self.direction = match self.direction {
+            Direction::North => Direction::South,
+            Direction::South => Direction::North,
+            Direction::East => Direction::West,
+            Direction::West => Direction::East,
+        };
+        self.inverse_mode = !self.inverse_mode;
+        self.process_instruction()?;
+        Ok(())
+    }
+
+    fn step(&mut self) -> Result<(), BefreakError> {
         // http://tunes.org/~iepos/befreak.html#reference
 
-        self.location = Direction::step_location(self.direction, self.location);
-        self.step += 1;
+        let Self { location, .. } = self;
+        self.location = match self.direction {
+            Direction::North => (location.0, location.1 - 1),
+            Direction::South => (location.0, location.1 + 1),
+            Direction::East => (location.0 + 1, location.1),
+            Direction::West => (location.0 - 1, location.1),
+        };
 
-        /*if self.info_level == InfoLevel::Debug {
-            println!(
-                "{}, {:?}, {:?}, {}",
-                self.get_instruction(self.location),
-                self.stack,
-                self.control_stack,
-                self.inverse_mode
-            );
-        }*/
+        if !self.inverse_mode {
+            self.step += 1;
+        } else {
+            self.step -= 1;
+        }
 
+        self.process_instruction()?;
+        Ok(())
+    }
+
+    fn process_instruction(&mut self) -> Result<(), BefreakError> {
         if self.ascii_mode {
-            let char = self.get_instruction(self.location);
+            let char = self.get_instruction(self.location)?;
             if *char == '"' {
                 self.ascii_mode = false;
             } else {
                 self.stack.push(*char as i64)
             }
-            return;
+            return Ok(());
         }
 
-        let instruction = self.get_instruction(self.location);
+        let instruction = self.get_instruction(self.location)?;
+        // TODO: allow reversing in the middle of a long number
         match instruction {
             '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
-                let new_digit = instruction.to_digit(10).unwrap() as i64;
-                self.current_number = match self.current_number {
-                    None => Some(new_digit),
-                    Some(num) => Some(num * 10 + new_digit),
-                };
-                return;
+                self.number_stack.push(*instruction);
+                return Ok(());
             }
             _ => {
-                if let Some(number) = self.current_number {
+                if self.number_stack.len() > 0 {
+                    let mut number: i64 = 0;
+                    if self.inverse_mode {
+                        for digit in self
+                            .number_stack
+                            .iter()
+                            .map(|x| x.to_digit(10).unwrap() as i64)
+                            .rev()
+                        {
+                            number = number * 10 + digit;
+                        }
+                    } else {
+                        for digit in self
+                            .number_stack
+                            .iter()
+                            .map(|x| x.to_digit(10).unwrap() as i64)
+                        {
+                            number = number * 10 + digit;
+                        }
+                    }
                     *self.stack.last_mut().unwrap() ^= number;
-                    self.current_number = None;
+                    self.number_stack = vec![];
                 }
             }
         };
 
-        let mut instruction = self.get_instruction(self.location).clone();
+        let mut instruction = self.get_instruction(self.location)?.clone();
         if self.inverse_mode {
             instruction = match instruction {
                 '(' => ')',
@@ -400,10 +485,8 @@ impl State {
                 '[' => ']',
                 ']' => '[',
 
-                // interpret as NOOP for now
-                // FIXME:
-                'w' => ' ',
-                'r' => ' ',
+                'w' => 'w',
+                'r' => ' ', // FIXME:
 
                 '\'' => '`',
                 '`' => '\'',
@@ -434,61 +517,72 @@ impl State {
             '(' => self.stack.push(0),
             // Pop a zero from the stack
             ')' => {
-                if self.stack.pop() != Some(0) {
-                    panic!("popped non-zero value")
+                if self.pop_main()? != 0 {
+                    return Err(BefreakError::InvalidPopZero);
                 }
             }
 
             // Transfer the top of main stack to control stack
-            '[' => self
-                .control_stack
-                .push(self.stack.pop().expect("main stack shouldn't be empty")),
+            '[' => {
+                let x = self.pop_main()?;
+                self.control_stack.push(x);
+            }
             // Transfer the top of control stack to the main stack
-            ']' => self.stack.push(
-                self.control_stack
-                    .pop()
-                    .expect("control stack shouldn't be empty"),
-            ),
+            ']' => {
+                let x = self.pop_ctrl()?;
+                self.stack.push(x)
+            }
 
             // Swap the top item with the top of control stack
             '$' => {
-                let main = self.stack.pop().expect("empty stack");
-                let control = self.control_stack.pop().expect("empty stack");
+                let main = self.pop_main()?;
+                let control = self.pop_ctrl()?;
                 self.stack.push(control);
                 self.control_stack.push(main);
             }
 
             // Write the top item to stdout as a character
             'w' => {
-                let x = self.pop();
-                /*if self.info_level == InfoLevel::Live {
-                    print!("{}", x as u8 as char);
-                }*/
-                self.output_stack.push(x);
+                if !self.inverse_mode {
+                    let x = self.pop_main()?;
+                    self.output_stack.push(x);
+                } else {
+                    match self.output_stack.pop() {
+                        None => return Err(BefreakError::EmptyOutputStack),
+                        Some(x) => self.stack.push(x),
+                    };
+                }
             }
+
             // Read a character from stdin to the top of stack
             'r' => todo!(),
 
             //TODO: allow under/overflow in increments/decrement
 
             // Increment the top item
-            '\'' => *self.stack.last_mut().expect("empty stack") += 1,
+            '\'' => match self.stack.last_mut() {
+                None => return Err(BefreakError::EmptyMainStack),
+                Some(x) => *x += 1,
+            },
             // Decrement the top item
-            '`' => *self.stack.last_mut().expect("empty stack") -= 1,
+            '`' => match self.stack.last_mut() {
+                None => return Err(BefreakError::EmptyMainStack),
+                Some(x) => *x -= 1,
+            },
 
             // TODO: allow under/overflow in sum/minus
 
             // Add the top item to the next item
             '+' => {
-                let top = self.stack.pop().expect("empty stack");
-                let next = self.stack.pop().expect("empty stack");
+                let top = self.pop_main()?;
+                let next = self.pop_main()?;
                 self.stack.push(next + top);
                 self.stack.push(top);
             }
             // Subtract the top item from the next item
             '-' => {
-                let top = self.stack.pop().expect("empty stack");
-                let next = self.stack.pop().expect("empty stack");
+                let top = self.pop_main()?;
+                let next = self.pop_main()?;
                 self.stack.push(next - top);
                 self.stack.push(top);
             }
@@ -496,29 +590,35 @@ impl State {
             // Divide next by top, leaving a quotient and remainder
             // [y] [x] -> [y/x] [y%x] [x]
             '%' => {
-                let x = self.stack.pop().expect("empty stack");
-                let y = self.stack.pop().expect("empty stack");
+                let x = self.pop_main()?;
+                let y = self.pop_main()?;
                 self.stack.push(y / x);
                 self.stack.push(y % x);
                 self.stack.push(x);
             }
             // Undo the effects of %, using multiplication
             '*' => {
-                let top = self.stack.pop().expect("empty stack");
-                let remainder = self.stack.pop().expect("empty stack");
-                let quotient = self.stack.pop().expect("empty stack");
+                let top = self.pop_main()?;
+                let remainder = self.pop_main()?;
+                let quotient = self.pop_main()?;
                 self.stack.push(quotient * top + remainder);
                 self.stack.push(top);
             }
 
             // Bitwise NOT the top item
-            '~' => *self.stack.last_mut().unwrap() = !self.stack.last().expect("empty stack"),
+            '~' => {
+                match self.stack.last() {
+                    None => return Err(BefreakError::EmptyMainStack),
+                    Some(x) => *self.stack.last_mut().unwrap() = !x,
+                }
+            },
+
             // Bitwise AND top two items, XOR'ing to the third
             // [z] [y] [x] -> [z^(y&x)] [y] [x]
             '&' => {
-                let x = self.stack.pop().expect("empty stack");
-                let y = self.stack.pop().expect("empty stack");
-                let z = self.stack.pop().expect("empty stack");
+                let x = self.pop_main()?;
+                let y = self.pop_main()?;
+                let z = self.pop_main()?;
                 self.stack.push(z ^ (y & x));
                 self.stack.push(y);
                 self.stack.push(x);
@@ -526,9 +626,9 @@ impl State {
             // Bitwise OR top two items, XOR'ing to the third
             // [z] [y] [x] -> [z^(y|x)] [y] [x]
             '|' => {
-                let x = self.stack.pop().expect("empty stack");
-                let y = self.stack.pop().expect("empty stack");
-                let z = self.stack.pop().expect("empty stack");
+                let x = self.pop_main()?;
+                let y = self.pop_main()?;
+                let z = self.pop_main()?;
                 self.stack.push(z ^ (y | x));
                 self.stack.push(y);
                 self.stack.push(x);
@@ -536,8 +636,8 @@ impl State {
             // Bitwise XOR the top item to the next item
             // [y] [x] -> [y^x] [x]
             '#' => {
-                let x = self.stack.pop().expect("empty stack");
-                let y = self.stack.pop().expect("empty stack");
+                let x = self.pop_main()?;
+                let y = self.pop_main()?;
                 self.stack.push(y ^ x);
                 self.stack.push(x);
             }
@@ -546,15 +646,15 @@ impl State {
             // Rotate "y" to the left "x" bits
             //[y] [x] -> [y'] [x]
             '{' => {
-                let x = self.stack.pop().expect("empty stack");
-                let y = self.stack.pop().expect("empty stack");
+                let x = self.pop_main()?;
+                let y = self.pop_main()?;
                 self.stack.push(y.rotate_left(x as u32));
                 self.stack.push(x);
             }
             // Rotate "y" to the right "x" bits
             '}' => {
-                let x = self.stack.pop().expect("empty stack");
-                let y = self.stack.pop().expect("empty stack");
+                let x = self.pop_main()?;
+                let y = self.pop_main()?;
                 self.stack.push(y.rotate_right(x as u32));
                 self.stack.push(x);
             }
@@ -564,8 +664,8 @@ impl State {
 
             // If y equals x, toggle top of control stack
             '=' => {
-                let top = self.stack.pop().expect("empty stack");
-                let next = self.stack.pop().expect("empty stack");
+                let top = self.pop_main()?;
+                let next = self.pop_main()?;
                 if next == top {
                     self.toggle_control_stack()
                 }
@@ -575,8 +675,8 @@ impl State {
 
             // If y is less than x, toggle top of control stack
             'l' => {
-                let top = self.stack.pop().expect("empty stack");
-                let next = self.stack.pop().expect("empty stack");
+                let top = self.pop_main()?;
+                let next = self.pop_main()?;
                 if next < top {
                     self.toggle_control_stack()
                 }
@@ -586,8 +686,8 @@ impl State {
 
             // If y is greater than x, toggle top of control stack
             'g' => {
-                let top = self.stack.pop().expect("empty stack");
-                let next = self.stack.pop().expect("empty stack");
+                let top = self.pop_main()?;
+                let next = self.pop_main()?;
                 if next > top {
                     self.toggle_control_stack()
                 }
@@ -597,8 +697,8 @@ impl State {
 
             // Swap the top two items
             's' => {
-                let top = self.stack.pop().expect("empty stack");
-                let next = self.stack.pop().expect("empty stack");
+                let top = self.pop_main()?;
+                let next = self.pop_main()?;
                 self.stack.push(top);
                 self.stack.push(next);
             }
@@ -606,9 +706,9 @@ impl State {
             // Dig the third item to the top
             // [z] [y] [x] -> [y] [x] [z]
             'd' => {
-                let x = self.stack.pop().expect("empty stack");
-                let y = self.stack.pop().expect("empty stack");
-                let z = self.stack.pop().expect("empty stack");
+                let x = self.pop_main()?;
+                let y = self.pop_main()?;
+                let z = self.pop_main()?;
                 self.stack.push(y);
                 self.stack.push(x);
                 self.stack.push(z);
@@ -616,9 +716,9 @@ impl State {
             // Bury the first item under the next two
             // [z] [y] [x] -> [x] [z] [y]
             'b' => {
-                let x = self.stack.pop().expect("empty stack");
-                let y = self.stack.pop().expect("empty stack");
-                let z = self.stack.pop().expect("empty stack");
+                let x = self.pop_main()?;
+                let y = self.pop_main()?;
+                let z = self.pop_main()?;
                 self.stack.push(x);
                 self.stack.push(z);
                 self.stack.push(y);
@@ -626,9 +726,9 @@ impl State {
             // Flip the order of the top three items
             // [z] [y] [x] -> [x] [y] [z]
             'f' => {
-                let x = self.stack.pop().expect("empty stack");
-                let y = self.stack.pop().expect("empty stack");
-                let z = self.stack.pop().expect("empty stack");
+                let x = self.pop_main()?;
+                let y = self.pop_main()?;
+                let z = self.pop_main()?;
                 self.stack.push(x);
                 self.stack.push(y);
                 self.stack.push(z);
@@ -636,9 +736,9 @@ impl State {
             // Swap the second and third items
             // [z] [y] [x] -> [y] [z] [x]
             'c' => {
-                let x = self.stack.pop().expect("empty stack");
-                let y = self.stack.pop().expect("empty stack");
-                let z = self.stack.pop().expect("empty stack");
+                let x = self.pop_main()?;
+                let y = self.pop_main()?;
+                let z = self.pop_main()?;
                 self.stack.push(y);
                 self.stack.push(z);
                 self.stack.push(x);
@@ -646,8 +746,8 @@ impl State {
             // "Over": dig copy of second item to the top
             // [y] [x] -> [y] [x] [y]
             'o' => {
-                let x = self.stack.pop().expect("empty stack");
-                let y = self.stack.pop().expect("empty stack");
+                let x = self.pop_main()?;
+                let y = self.pop_main()?;
                 self.stack.push(y);
                 self.stack.push(x);
                 self.stack.push(y);
@@ -655,11 +755,11 @@ impl State {
             // "Under": the inverse of "over"
             // [y] [x] [y] -> [y] [x]
             'u' => {
-                let y1 = self.stack.pop().expect("empty stack");
-                let x = self.stack.pop().expect("empty stack");
-                let y2 = self.stack.pop().expect("empty stack");
+                let y1 = self.pop_main()?;
+                let x = self.pop_main()?;
+                let y2 = self.pop_main()?;
                 if y1 != y2 {
-                    panic!("invalid inverse of over");
+                    return Err(BefreakError::InvalidUnder);
                 }
                 self.stack.push(y1);
                 self.stack.push(x);
@@ -667,17 +767,17 @@ impl State {
             // Duplicate the top item
             // [x] -> [x] [x]
             ':' => {
-                let x = self.pop();
+                let x = self.pop_main()?;
                 self.stack.push(x);
                 self.stack.push(x);
             }
             // Unduplicate the top two items
             // [x] [x] -> [x]
             ';' => {
-                let x1 = self.pop();
-                let x2 = self.pop();
+                let x1 = self.pop_main()?;
+                let x2 = self.pop_main()?;
                 if x1 != x2 {
-                    panic!("unduplicate called on non-duplicates");
+                    return Err(BefreakError::InvalidUnduplicate);
                 }
                 self.stack.push(x1);
             }
@@ -715,20 +815,20 @@ impl State {
             '>' => match self.direction {
                 Direction::North => {
                     self.direction = Direction::East;
-                    self.control_stack.push(!self.inverse_mode as i64);
+                    self.control_stack.push(i64::from(!self.inverse_mode));
                 }
                 Direction::South => {
                     self.direction = Direction::East;
-                    self.control_stack.push(self.inverse_mode as i64);
+                    self.control_stack.push(i64::from(self.inverse_mode));
                 }
                 Direction::West => {
                     let dir = self.control_stack.pop();
                     if dir == Some(self.inverse_mode as i64) {
                         self.direction = Direction::South;
-                    } else if dir == Some(!self.inverse_mode as i64) {
+                    } else if dir == Some(i64::from(!self.inverse_mode)) {
                         self.direction = Direction::North;
                     } else {
-                        panic!("invalid value in control stack");
+                        return Err(BefreakError::NonBoolInControlStack);
                     }
                 }
                 Direction::East => {
@@ -744,20 +844,20 @@ impl State {
             '<' => match self.direction {
                 Direction::North => {
                     self.direction = Direction::West;
-                    self.control_stack.push(self.inverse_mode as i64);
+                    self.control_stack.push(i64::from(self.inverse_mode));
                 }
                 Direction::South => {
                     self.direction = Direction::West;
-                    self.control_stack.push(!self.inverse_mode as i64);
+                    self.control_stack.push(i64::from(!self.inverse_mode));
                 }
                 Direction::East => {
                     let dir = self.control_stack.pop();
-                    if dir == Some(self.inverse_mode as i64) {
+                    if dir == Some(i64::from(self.inverse_mode)) {
                         self.direction = Direction::North;
-                    } else if dir == Some(!self.inverse_mode as i64) {
+                    } else if dir == Some(i64::from(!self.inverse_mode)) {
                         self.direction = Direction::South;
                     } else {
-                        panic!("invalid value in control stack");
+                        return Err(BefreakError::NonBoolInControlStack);
                     }
                 }
                 Direction::West => {
@@ -773,20 +873,20 @@ impl State {
             'v' => match self.direction {
                 Direction::East => {
                     self.direction = Direction::South;
-                    self.control_stack.push(!self.inverse_mode as i64);
+                    self.control_stack.push(i64::from(!self.inverse_mode));
                 }
                 Direction::West => {
                     self.direction = Direction::South;
-                    self.control_stack.push(self.inverse_mode as i64);
+                    self.control_stack.push(i64::from(self.inverse_mode));
                 }
                 Direction::North => {
                     let dir = self.control_stack.pop();
-                    if dir == Some(self.inverse_mode as i64) {
+                    if dir == Some(i64::from(self.inverse_mode)) {
                         self.direction = Direction::West;
-                    } else if dir == Some(!self.inverse_mode as i64) {
+                    } else if dir == Some(i64::from(!self.inverse_mode)) {
                         self.direction = Direction::East;
                     } else {
-                        panic!("invalid value in control stack");
+                        return Err(BefreakError::NonBoolInControlStack);
                     }
                 }
                 Direction::South => {
@@ -802,41 +902,50 @@ impl State {
             '^' => match self.direction {
                 Direction::East => {
                     self.direction = Direction::North;
-                    self.control_stack.push(self.inverse_mode as i64);
+                    self.control_stack.push(i64::from(self.inverse_mode));
                 }
                 Direction::West => {
                     self.direction = Direction::North;
-                    self.control_stack.push(!self.inverse_mode as i64);
+                    self.control_stack.push(i64::from(!self.inverse_mode));
                 }
                 Direction::South => {
                     let dir = self.control_stack.pop();
-                    if dir == Some(self.inverse_mode as i64) {
+                    if dir == Some(i64::from(self.inverse_mode)) {
                         self.direction = Direction::East;
-                    } else if dir == Some(!self.inverse_mode as i64) {
+                    } else if dir == Some(i64::from(!self.inverse_mode)) {
                         self.direction = Direction::West;
                     } else {
-                        panic!("invalid value in control stack");
+                        return Err(BefreakError::NonBoolInControlStack);
                     }
                 }
                 Direction::North => {
                     self.toggle_control_stack();
                     self.inverse_mode = !self.inverse_mode;
-                    self.direction = Direction::South
+                    self.direction = Direction::South;
                 }
             },
             ' ' => (),
             _ => unreachable!(),
+        };
+        Ok(())
+    }
+
+    fn pop_main(&mut self) -> Result<i64, BefreakError> {
+        match self.stack.pop() {
+            None => Err(BefreakError::EmptyMainStack),
+            Some(num) => Ok(num),
         }
     }
 
-    fn pop(&mut self) -> i64 {
-        self.stack
-            .pop()
-            .expect("should not pop when stack is empty")
+    fn pop_ctrl(&mut self) -> Result<i64, BefreakError> {
+        match self.control_stack.pop() {
+            None => Err(BefreakError::EmptyControlStack),
+            Some(num) => Ok(num),
+        }
     }
 
     fn toggle_control_stack(&mut self) {
-        *self.control_stack.last_mut().unwrap() ^= 1
+        *self.control_stack.last_mut().unwrap() ^= 1;
     }
 
     fn end(&mut self) -> ! {
