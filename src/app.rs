@@ -1,5 +1,9 @@
 use array2d::{Array2D, Error};
 
+use egui::Context;
+use std::future::Future;
+use std::sync::mpsc::{channel, Receiver, Sender};
+
 // for file read
 use std::fs::File;
 use std::io::{self, BufRead};
@@ -44,17 +48,206 @@ struct State {
     current_number: Option<i64>,
 
     // constants
-    info_level: InfoLevel,
     code: Array2D<char>,
 }
 
+pub struct AppState {
+    state: State,
+    speed: f32,
+    text_channel: (Sender<String>, Receiver<String>),
+}
+
+impl AppState {
+    /// Called once before the first frame.
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // This is also where you can customize the look and feel of egui using
+        // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
+
+        Self {
+            //state: State::new_empty(),
+            state: State::new_load_file("primes1"),
+            text_channel: channel(),
+            speed: 5.0,
+        }
+    }
+}
+
+impl eframe::App for AppState {
+    /// Called each time the UI needs repainting, which may be many times per second.
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Put your widgets into a `SidePanel`, `TopBottomPanel`, `CentralPanel`, `Window` or `Area`.
+        // For inspiration and more examples, go to https://emilk.github.io/egui
+        //
+        if let Ok(text) = self.text_channel.1.try_recv() {
+            self.state = State::new_from_string(text);
+        }
+
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            // The top panel is often a good place for a menu bar:
+
+            egui::menu::bar(ui, |ui| {
+                // NOTE: no File->Quit on web pages!
+                let is_web = cfg!(target_arch = "wasm32");
+                ui.menu_button("File", |ui| {
+                    if !is_web {
+                        if ui.button("Quit").clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    }
+                    if ui.button("📂 Open text file").clicked() {
+                        let sender = self.text_channel.0.clone();
+                        let task = rfd::AsyncFileDialog::new().pick_file();
+                        // Context is wrapped in an Arc so it's cheap to clone as per:
+                        // > Context is cheap to clone, and any clones refers to the same mutable data (Context uses refcounting internally).
+                        // Taken from https://docs.rs/egui/0.24.1/egui/struct.Context.html
+                        let ctx = ui.ctx().clone();
+                        execute(async move {
+                            let file = task.await;
+                            if let Some(file) = file {
+                                let text = file.read().await;
+                                let _ = sender.send(String::from_utf8_lossy(&text).to_string());
+                                ctx.request_repaint();
+                            }
+                        });
+                    }
+
+                    if ui.button("💾 Save text to file").clicked() {
+                        let task = rfd::AsyncFileDialog::new().save_file();
+                        let contents = self.state.serialize();
+                        execute(async move {
+                            let file = task.await;
+                            if let Some(file) = file {
+                                _ = file.write(contents.as_bytes()).await;
+                            }
+                        });
+                    }
+                });
+                ui.add_space(16.0);
+
+                egui::widgets::global_dark_light_mode_buttons(ui);
+            });
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            // The central panel the region left after adding TopPanel's and SidePanel's
+            ui.heading("Befreak interpreter");
+
+            ui.add(egui::Slider::new(&mut self.speed, 0.0..=10.0).text("speed"));
+
+            ui.separator();
+
+            egui::Grid::new("letter_grid").show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                for row in self.state.code.rows_iter() {
+                    for c in row {
+                        ui.label(c.to_string());
+                    }
+                    ui.end_row()
+                }
+            });
+
+            ui.separator();
+
+            ui.add(egui::github_link_file!(
+                "https://github.com/emilk/eframe_template/blob/main/",
+                "Source code."
+            ));
+
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                powered_by_egui_and_eframe(ui);
+                egui::warn_if_debug_build(ui);
+            });
+        });
+    }
+}
+
+fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.label("Powered by ");
+        ui.hyperlink_to("egui", "https://github.com/emilk/egui");
+        ui.label(" and ");
+        ui.hyperlink_to(
+            "eframe",
+            "https://github.com/emilk/egui/tree/master/crates/eframe",
+        );
+        ui.label(".");
+    });
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            stack: vec![],
+            control_stack: vec![],
+            location: (0, 0),
+            direction: Direction::East,
+            output_stack: vec![],
+            direction_reversed: false,
+            inverse_mode: false,
+            ascii_mode: false,
+            current_number: None,
+            code: Array2D::filled_with(' ', 10, 10),
+        }
+    }
+}
+
 impl State {
-    fn new<P>(path: P, info_level: InfoLevel) -> Self
+    fn new_load_file<P>(path: P) -> Self
     where
         P: AsRef<Path>,
     {
-        let code = read_lines(path);
+        let file = File::open(path).unwrap();
+        let mut lines = vec![];
+        for maybe_line in io::BufReader::new(file).lines() {
+            if let Ok(line) = maybe_line {
+                lines.push(line.chars().collect())
+            }
+        }
+        let code = Array2D::from_rows(&lines).unwrap();
 
+        match Self::get_start_pos(&code) {
+            None => panic!("No start position"),
+            Some(location) => Self {
+                location,
+                code,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn new_from_string(data: String) -> Self {
+        let mut lines = vec![];
+        for line in data.lines() {
+            lines.push(line.chars().collect())
+        }
+        let code = Array2D::from_rows(&lines).unwrap();
+        
+        match Self::get_start_pos(&code) {
+            None => panic!("No start position"),
+            Some(location) => Self {
+                location,
+                code,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn new_empty() -> Self {
+        Default::default()
+    }
+
+    fn serialize(&self) -> String {
+        let mut s: String = String::new();
+        for line in self.code.rows_iter() {
+            s.push_str(&line.collect::<String>());
+            s.push('\n');
+        }
+        s
+    }
+
+    // TODO: check for more than one start pos and crash?
+    fn get_start_pos(code: &Array2D<char>) -> Option<(usize, usize)> {
         let mut start: Option<(usize, usize)> = None;
         for (index_y, mut row) in code.rows_iter().enumerate() {
             if let Some(index_x) = row.position(|x| *x == '@') {
@@ -62,24 +255,7 @@ impl State {
                 break;
             }
         }
-        // TODO: check for more than one start pos and crash?
-        match start {
-            None => panic!("No start position"),
-            Some(location) => Self {
-                stack: vec![],
-                control_stack: vec![],
-                location,
-                direction: Direction::East,
-                output_stack: vec![],
-                direction_reversed: false,
-                inverse_mode: false,
-                ascii_mode: false,
-                current_number: None,
-
-                info_level,
-                code,
-            },
-        }
+        start
     }
 
     fn get_instruction(&self, location: (usize, usize)) -> &char {
@@ -94,7 +270,7 @@ impl State {
 
         self.location = Direction::step_location(self.direction, self.location);
 
-        if self.info_level == InfoLevel::Debug {
+        /*if self.info_level == InfoLevel::Debug {
             println!(
                 "{}, {:?}, {:?}, {}",
                 self.get_instruction(self.location),
@@ -102,7 +278,7 @@ impl State {
                 self.control_stack,
                 self.inverse_mode
             );
-        }
+        }*/
 
         if self.ascii_mode {
             let char = self.get_instruction(self.location);
@@ -202,9 +378,9 @@ impl State {
             // Write the top item to stdout as a character
             'w' => {
                 let x = self.pop();
-                if self.info_level == InfoLevel::Live {
+                /*if self.info_level == InfoLevel::Live {
                     print!("{}", x as u8 as char);
-                }
+                }*/
                 self.output_stack.push(x);
             }
             // Read a character from stdin to the top of stack
@@ -449,8 +625,6 @@ impl State {
                 }
             }
 
-            // TODO: THESE ARE TOTALLY BORKED IN REVERSE MODE!!!!!!1!!1!!
-
             // If going north, go east and push 1 (in reverse mode, push 0) ...
             // If going south, go east and push 0 (in reverse mode, push 1) ...
             // If going west, pop and go south if 0, north if 1. (opposite in reverse mode)
@@ -583,33 +757,22 @@ impl State {
     }
 
     fn end(&mut self) -> ! {
-        if self.info_level == InfoLevel::AtCompletion {
+        /*if self.info_level == InfoLevel::AtCompletion {
             for char in self.output_stack.iter() {
                 print!("{}", *char as u8 as char);
             }
-        }
+        }*/
         std::process::exit(0);
     }
 }
 
-fn main() {
-    let filename: String = text_io::read!();
-    let mut state = State::new(filename, InfoLevel::Debug);
-    loop {
-        state.step();
-    }
+#[cfg(not(target_arch = "wasm32"))]
+fn execute<F: Future<Output = ()> + Send + 'static>(f: F) {
+    // this is stupid... use any executor of your choice instead
+    std::thread::spawn(move || futures::executor::block_on(f));
 }
 
-fn read_lines<P>(filename: P) -> Array2D<char>
-where
-    P: AsRef<Path>,
-{
-    let file = File::open(filename).unwrap();
-    let mut lines = vec![];
-    for maybe_line in io::BufReader::new(file).lines() {
-        if let Ok(line) = maybe_line {
-            lines.push(line.chars().collect())
-        }
-    }
-    Array2D::from_rows(&lines).unwrap()
+#[cfg(target_arch = "wasm32")]
+fn execute<F: Future<Output = ()> + 'static>(f: F) {
+    wasm_bindgen_futures::spawn_local(f);
 }
