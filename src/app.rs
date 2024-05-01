@@ -48,6 +48,8 @@ struct State {
     ascii_mode: bool,
     current_number: Option<i64>,
 
+    step: u64,
+
     // constants
     code: Array2D<char>,
 }
@@ -88,8 +90,6 @@ impl eframe::App for AppState {
         if let Ok(text) = self.text_channel.1.try_recv() {
             self.state = State::new_from_string(text);
         }
-
-
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
@@ -138,25 +138,31 @@ impl eframe::App for AppState {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-
-            let time_per_step = Duration::from_millis(((11.0 - self.speed) * 10.0) as u64); 
+            let time_per_step = Duration::from_millis(((11.0 - self.speed) * 1.0) as u64);
             if !self.paused {
                 if self.previous_instant.elapsed() >= time_per_step {
                     self.state.step();
                     self.previous_instant = Instant::now();
                 }
-                
+
                 ui.ctx().request_repaint_after(time_per_step);
             }
 
             // The central panel the region left after adding TopPanel's and SidePanel's
-            ui.heading("Befreak interpreter");
+            ui.horizontal(|ui| {
+                ui.heading("Befreak interpreter");
+                ui.label("step: ");
+                ui.label(self.state.step.to_string());
+            });
 
             ui.horizontal(|ui| {
                 if ui.button("step").clicked() {
                     self.state.step();
                 };
-                if ui.button(if self.paused {"unpause"} else {"pause"}).clicked() {
+                if ui
+                    .button(if self.paused { "unpause" } else { "pause" })
+                    .clicked()
+                {
                     self.paused = !self.paused;
                 };
                 ui.add(egui::Slider::new(&mut self.speed, 1.0..=10.0).text("speed"));
@@ -165,40 +171,56 @@ impl eframe::App for AppState {
             ui.separator();
 
             ui.horizontal(|ui| {
-                ui.label("output");
-                let output = &self.state.output_stack.iter().map(|x| *x as u8 as char).collect::<String>();
-                ui.label(output);
-                
-                ui.separator();
-                ui.label("primary stack");
-                for value in &self.state.stack {
-                    ui.label(value.to_string());
-                }
-
-                ui.separator();
-                ui.label("control stack");
-                for value in &self.state.control_stack {
-                    ui.label(value.to_string());
-                }
-
-
+                ui.columns(3, |cols| {
+                    cols[0].vertical_centered_justified(|ui| {
+                        ui.label("output");
+                        let output = &self
+                            .state
+                            .output_stack
+                            .iter()
+                            .map(|x| *x as u8 as char)
+                            .collect::<String>();
+                        ui.label(output);
+                    });
+                    //TODO: these don't fit if the stack is too full
+                    cols[1].vertical_centered_justified(|ui| {
+                        ui.label("primary stack");
+                        ui.horizontal(|ui| {
+                        for value in self.state.stack.iter() {
+                            ui.label(value.to_string());
+                        }
+                        })
+                    });
+                    cols[2].vertical_centered_justified(|ui| {
+                        ui.label("control stack");
+                        ui.horizontal(|ui| {
+                        for value in self.state.control_stack.iter() {
+                            ui.label(value.to_string());
+                        }
+                        })
+                    });
+                });
             });
 
             ui.separator();
 
-            egui::Grid::new("letter_grid").spacing([0.0,0.0]).show(ui, |ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                for (index_y, row) in self.state.code.rows_iter().enumerate() {
-                    for (index_x, c) in row.enumerate() {
-                        if self.state.location == (index_x, index_y) {
-                            ui.label(egui::RichText::new(*c).background_color(egui::Color32::RED));
-                        } else {
-                            ui.label(c.to_string());
+            egui::Grid::new("letter_grid")
+                .spacing([0.0, 0.0])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    for (index_y, row) in self.state.code.rows_iter().enumerate() {
+                        for (index_x, c) in row.enumerate() {
+                            if self.state.location == (index_x, index_y) {
+                                ui.label(
+                                    egui::RichText::new(*c).background_color(egui::Color32::RED),
+                                );
+                            } else {
+                                ui.label(c.to_string());
+                            }
                         }
+                        ui.end_row()
                     }
-                    ui.end_row()
-                }
-            });
+                });
 
             ui.separator();
 
@@ -246,6 +268,7 @@ impl Default for State {
             inverse_mode: false,
             ascii_mode: false,
             current_number: None,
+            step: 0,
             code: Array2D::filled_with(' ', 10, 10),
         }
     }
@@ -281,7 +304,7 @@ impl State {
             lines.push(line.chars().collect())
         }
         let code = Array2D::from_rows(&lines).unwrap();
-        
+
         match Self::get_start_pos(&code) {
             None => panic!("No start position"),
             Some(location) => Self {
@@ -328,6 +351,7 @@ impl State {
         // http://tunes.org/~iepos/befreak.html#reference
 
         self.location = Direction::step_location(self.direction, self.location);
+        self.step += 1;
 
         /*if self.info_level == InfoLevel::Debug {
             println!(
