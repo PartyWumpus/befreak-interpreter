@@ -421,7 +421,7 @@ impl State {
             Direction::West => (location.0 - 1, location.1),
         };
 
-        if !self.inverse_mode {
+        if !self.direction_reversed {
             self.step += 1;
         } else {
             self.step -= 1;
@@ -557,33 +557,30 @@ impl State {
             // Read a character from stdin to the top of stack
             'r' => todo!(),
 
-            //TODO: allow under/overflow in increments/decrement
 
             // Increment the top item
             '\'' => match self.stack.last_mut() {
                 None => return Err(BefreakError::EmptyMainStack),
-                Some(x) => *x += 1,
+                Some(x) => *x = x.overflowing_add(1).0,
             },
             // Decrement the top item
             '`' => match self.stack.last_mut() {
                 None => return Err(BefreakError::EmptyMainStack),
-                Some(x) => *x -= 1,
+                Some(x) => *x = x.overflowing_sub(1).0,
             },
-
-            // TODO: allow under/overflow in sum/minus
 
             // Add the top item to the next item
             '+' => {
                 let top = self.pop_main()?;
                 let next = self.pop_main()?;
-                self.stack.push(next + top);
+                self.stack.push(next.overflowing_add(top).0);
                 self.stack.push(top);
             }
             // Subtract the top item from the next item
             '-' => {
                 let top = self.pop_main()?;
                 let next = self.pop_main()?;
-                self.stack.push(next - top);
+                self.stack.push(next.overflowing_sub(top).0);
                 self.stack.push(top);
             }
 
@@ -948,7 +945,9 @@ impl State {
         *self.control_stack.last_mut().unwrap() ^= 1;
     }
 
-    fn end(&mut self) -> ! {
+    // TODO: make getting to the end more reasonable.
+    // maybe run a reset command?
+    fn end(&mut self) -> () {
         /*if self.info_level == InfoLevel::AtCompletion {
             for char in self.output_stack.iter() {
                 print!("{}", *char as u8 as char);
