@@ -1,4 +1,5 @@
 use array2d::Array2D;
+use phf::phf_map;
 
 use instant::Instant;
 use std::future::Future;
@@ -13,6 +14,70 @@ use std::path::Path;
 // TODO: add file editing:
 // changing individual characters
 // changing grid size
+
+static PRESETS: phf::Map<&'static str, &'static str> = phf_map! {
+"hello world 1" =>r#"
+/"Hello world!"01\
+\(13v     `wsv)@(/
+    \(=13=13)/    "#,
+
+"hello world 2" =>r#"
+/"Hello world!"01\
+\(13vws`v     )@(/
+    (   )         
+    =   3         
+        1         
+    \13=/         "#,
+
+"hello world 3" => r#"
+/"Hello world!"\
+\(13:vwd` v@(10/
+     \=(=)/     "#,
+
+"primes 1" => r#"
+    /1)@(1\         
+    >)1=1(<         
+    \'(v?)/         
+       >'%s(\       
+     ^ >*s)=/       
+     >=<            
+     (              
+/s'0v^?w23(v`s]:(48\
+[   (      )       +
+)   =      =       4
+0   c      c       8
+1   =      =       )
+%   )      (       w
+\01(^      ^)01*01(/"#,
+
+"primes 2" => r#"
+    /2)@(2\         
+    >)2=2(<         
+    \'(v?)/         
+       s            
+       (            
+       1            
+       >(1=1\       
+       )            
+       1    o       
+       {    *       
+       1    b       
+       (    l       
+       >)u%d/       
+       c            
+       >b'%s(= \    
+     ^ >dc=c*s)/    
+     >=<            
+     d              
+     (              
+/s'0v^?w23(v`s]:(48\
+[   (      )       +
+)   =      =       4
+0   c      c       8
+1   =      =       )
+%   )      (       w
+\01(^      ^)01*01(/"#,
+};
 
 #[derive(Clone, Copy, Debug)]
 enum Direction {
@@ -191,6 +256,18 @@ impl eframe::App for AppState {
                         });
                     }
                 });
+
+                ui.menu_button("Presets", |ui| {
+                    for key in PRESETS.keys() {
+                        if ui.button(*key).clicked() {
+                            match PRESETS.get(key) {
+                                None => todo!(),
+                                Some(data) => self.state = State::new_from_string(data),
+                            }
+                        }
+                    }
+                });
+                
                 ui.add_space(16.0);
 
                 egui::widgets::global_dark_light_mode_buttons(ui);
@@ -374,7 +451,10 @@ impl State {
     fn new_from_string(data: &str) -> Self {
         let mut lines = vec![];
         for line in data.lines() {
-            lines.push(line.chars().collect());
+            // skip lines with no content
+            if !line.is_empty() {
+                lines.push(line.chars().collect());
+            }
         }
         let code = Array2D::from_rows(&lines).unwrap();
 
