@@ -1,4 +1,4 @@
-use array2d::{Array2D};
+use array2d::Array2D;
 
 use instant::Instant;
 use std::future::Future;
@@ -80,17 +80,17 @@ struct State {
 pub struct AppState {
     state: State,
     speed: f32,
-    cursor_position: (usize, usize),
+    //cursor_position: (usize, usize),
     paused: bool,
     previous_instant: Instant,
-    extra: bool,
+    //extra: bool,
     error: Option<BefreakError>,
     text_channel: (Sender<String>, Receiver<String>),
 }
 
 impl AppState {
     /// Called once before the first frame.
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(__cc: &eframe::CreationContext<'_>) -> Self {
         // This is also where you can customize the look and feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
 
@@ -98,10 +98,10 @@ impl AppState {
             state: State::new_empty(),
             //state: State::new_load_file("primes1"),
             text_channel: channel(),
-            cursor_position: (0, 0),
+            //cursor_position: (0, 0), //TODO: use this for editing
             previous_instant: Instant::now(),
             paused: true,
-            extra: false,
+            //extra: false, //TODO: use this for displaying more info
             error: None,
             speed: 5.0,
         }
@@ -268,7 +268,7 @@ impl eframe::App for AppState {
                     cols[2].vertical_centered_justified(|ui| {
                         ui.label("control stack");
                         ui.horizontal(|ui| {
-                            for value in self.state.control_stack.iter() {
+                            for value in &self.state.control_stack {
                                 ui.label(value.to_string());
                             }
                         })
@@ -292,7 +292,7 @@ impl eframe::App for AppState {
                                 ui.label(c.to_string());
                             }
                         }
-                        ui.end_row()
+                        ui.end_row();
                     }
                 });
 
@@ -350,7 +350,7 @@ impl Default for State {
 }
 
 impl State {
-    fn new_load_file<P>(path: P) -> Self
+    fn _new_load_file<P>(path: P) -> Self
     where
         P: AsRef<Path>,
     {
@@ -366,7 +366,7 @@ impl State {
             Some(location) => Self {
                 location,
                 code,
-                ..Default::default()
+                ..Self::default()
             },
         }
     }
@@ -374,7 +374,7 @@ impl State {
     fn new_from_string(data: &str) -> Self {
         let mut lines = vec![];
         for line in data.lines() {
-            lines.push(line.chars().collect())
+            lines.push(line.chars().collect());
         }
         let code = Array2D::from_rows(&lines).unwrap();
 
@@ -399,7 +399,7 @@ impl State {
                 *self = Self {
                     location,
                     code: self.code.clone(),
-                    ..State::default()
+                    ..Self::default()
                 }
             }
         };
@@ -427,7 +427,9 @@ impl State {
     }
 
     fn get_instruction(&self, location: (usize, usize)) -> Result<&char, BefreakError> {
-        self.code.get(location.1, location.0).ok_or(BefreakError::InvalidPosition)
+        self.code
+            .get(location.1, location.0)
+            .ok_or(BefreakError::InvalidPosition)
     }
 
     // TODO: fix reversing while processing a number
