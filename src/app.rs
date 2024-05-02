@@ -1,14 +1,18 @@
-use array2d::{Array2D, Error};
+use array2d::{Array2D};
 
-use egui::Context;
+use instant::Instant;
 use std::future::Future;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // for file read
 use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::Path;
+
+// TODO: add file editing:
+// changing individual characters
+// changing grid size
 
 #[derive(Clone, Copy, Debug)]
 enum Direction {
@@ -18,7 +22,7 @@ enum Direction {
     West,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 enum BefreakError {
     InvalidPosition,
     EmptyMainStack,
@@ -39,12 +43,18 @@ impl std::fmt::Display for BefreakError {
             Self::EmptyMainStack => "Attempted to pop off the stack but it was empty",
             Self::EmptyControlStack => "Attempted to pop off the control stack but it was empty",
             Self::EmptyOutputStack => "Attempted to pop off the output stack but it was empty",
-            Self::NonBoolInControlStack => "Tried to use the control stack but a non boolean value was at the top",
-            Self::InvalidUnduplicate => "Tried to unduplicate the top two values but they were not identical",
+            Self::NonBoolInControlStack => {
+                "Tried to use the control stack but a non boolean value was at the top"
+            }
+            Self::InvalidUnduplicate => {
+                "Tried to unduplicate the top two values but they were not identical"
+            }
             Self::InvalidPopZero => "Tried to pop a value off the stack but it was not a zero",
-            Self::InvalidUnder => "Tried to do under but the top and third values were not identical",
+            Self::InvalidUnder => {
+                "Tried to do under but the top and third values were not identical"
+            }
         };
-        write!(f, "{}", str)
+        write!(f, "{str}")
     }
 }
 
@@ -60,6 +70,7 @@ struct State {
     ascii_mode: bool,
     number_stack: Vec<char>,
 
+    finished: bool,
     step: u64,
 
     // constants
@@ -84,8 +95,8 @@ impl AppState {
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
 
         Self {
-            //state: State::new_empty(),
-            state: State::new_load_file("primes1"),
+            state: State::new_empty(),
+            //state: State::new_load_file("primes1"),
             text_channel: channel(),
             cursor_position: (0, 0),
             previous_instant: Instant::now(),
@@ -100,14 +111,24 @@ impl AppState {
 impl AppState {
     fn handle_err(&mut self, err: Result<(), BefreakError>) {
         match err {
-            Ok(..) => return,
+            Ok(..) => (),
             Err(err) => self.error = Some(err),
         }
     }
 
+    fn reset(&mut self) {
+        self.error = None;
+        self.state.reset();
+    }
+
     fn step(&mut self) {
-        let x = self.state.step();
-        self.handle_err(x);
+        if self.error.is_none() {
+            let x = self.state.step();
+            self.handle_err(x);
+        }
+        if self.state.finished {
+            self.paused = true;
+        }
     }
 
     fn reverse_direction(&mut self) {
@@ -123,7 +144,7 @@ impl eframe::App for AppState {
         // For inspiration and more examples, go to https://emilk.github.io/egui
         //
         if let Ok(text) = self.text_channel.1.try_recv() {
-            self.state = State::new_from_string(text);
+            self.state = State::new_from_string(&text);
         }
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
@@ -137,6 +158,10 @@ impl eframe::App for AppState {
                         if ui.button("Quit").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
+                    }
+                    if ui.button("New File").clicked() {
+                        self.error = None;
+                        self.state = State::new_empty();
                     }
                     if ui.button("📂 Open text file").clicked() {
                         let sender = self.text_channel.0.clone();
@@ -174,7 +199,7 @@ impl eframe::App for AppState {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let time_per_step = Duration::from_millis((500.0 - 49.0 * self.speed) as u64);
-            if !self.paused && self.error == None {
+            if !self.paused && self.error.is_none() {
                 if self.previous_instant.elapsed() >= time_per_step {
                     if self.speed == 10.00 {
                         // if speed is max, go double speed
@@ -203,12 +228,16 @@ impl eframe::App for AppState {
                 };
                 if ui
                     .button(if self.paused { "unpause" } else { "pause" })
-                    .clicked() && self.error == None
+                    .clicked()
+                    && self.error.is_none()
                 {
                     self.paused = !self.paused;
                 };
                 if ui.button("reverse").clicked() {
                     self.reverse_direction();
+                }
+                if ui.button("restart").clicked() {
+                    self.reset();
                 }
                 ui.add(egui::Slider::new(&mut self.speed, 1.0..=10.0).text("speed"));
             });
@@ -231,7 +260,7 @@ impl eframe::App for AppState {
                     cols[1].vertical_centered_justified(|ui| {
                         ui.label("primary stack");
                         ui.horizontal(|ui| {
-                            for value in self.state.stack.iter() {
+                            for value in &self.state.stack {
                                 ui.label(value.to_string());
                             }
                         })
@@ -280,8 +309,6 @@ impl eframe::App for AppState {
             });
         });
     }
-
-
 }
 
 fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
@@ -316,6 +343,7 @@ impl Default for State {
             ascii_mode: false,
             number_stack: vec![],
             step: 0,
+            finished: false,
             code: Array2D::filled_with(' ', 10, 10),
         }
     }
@@ -328,10 +356,8 @@ impl State {
     {
         let file = File::open(path).unwrap();
         let mut lines = vec![];
-        for maybe_line in io::BufReader::new(file).lines() {
-            if let Ok(line) = maybe_line {
-                lines.push(line.chars().collect())
-            }
+        for line in io::BufReader::new(file).lines().flatten() {
+            lines.push(line.chars().collect());
         }
         let code = Array2D::from_rows(&lines).unwrap();
 
@@ -345,7 +371,7 @@ impl State {
         }
     }
 
-    fn new_from_string(data: String) -> Self {
+    fn new_from_string(data: &str) -> Self {
         let mut lines = vec![];
         for line in data.lines() {
             lines.push(line.chars().collect())
@@ -366,6 +392,19 @@ impl State {
         Default::default()
     }
 
+    fn reset(&mut self) {
+        match Self::get_start_pos(&self.code) {
+            None => panic!("No start position"),
+            Some(location) => {
+                *self = Self {
+                    location,
+                    code: self.code.clone(),
+                    ..State::default()
+                }
+            }
+        };
+    }
+
     fn serialize(&self) -> String {
         let mut s: String = String::new();
         for line in self.code.rows_iter() {
@@ -375,7 +414,7 @@ impl State {
         s
     }
 
-    // TODO: check for more than one start pos and crash?
+    // TODO: check for more than one start pos and error?
     fn get_start_pos(code: &Array2D<char>) -> Option<(usize, usize)> {
         let mut start: Option<(usize, usize)> = None;
         for (index_y, mut row) in code.rows_iter().enumerate() {
@@ -388,10 +427,7 @@ impl State {
     }
 
     fn get_instruction(&self, location: (usize, usize)) -> Result<&char, BefreakError> {
-        match self.code.get(location.1, location.0) {
-            None => Err(BefreakError::InvalidPosition),
-            Some(char) => Ok(char),
-        }
+        self.code.get(location.1, location.0).ok_or(BefreakError::InvalidPosition)
     }
 
     // TODO: fix reversing while processing a number
@@ -421,10 +457,10 @@ impl State {
             Direction::West => (location.0 - 1, location.1),
         };
 
-        if !self.direction_reversed {
-            self.step += 1;
-        } else {
+        if self.direction_reversed {
             self.step -= 1;
+        } else {
+            self.step += 1;
         }
 
         self.process_instruction()?;
@@ -437,7 +473,7 @@ impl State {
             if *char == '"' {
                 self.ascii_mode = false;
             } else {
-                self.stack.push(*char as i64)
+                self.stack.push(*char as i64);
             }
             return Ok(());
         }
@@ -450,13 +486,13 @@ impl State {
                 return Ok(());
             }
             _ => {
-                if self.number_stack.len() > 0 {
+                if !self.number_stack.is_empty() {
                     let mut number: i64 = 0;
                     if self.inverse_mode {
                         for digit in self
                             .number_stack
                             .iter()
-                            .map(|x| x.to_digit(10).unwrap() as i64)
+                            .map(|x| i64::from(x.to_digit(10).unwrap()))
                             .rev()
                         {
                             number = number * 10 + digit;
@@ -465,7 +501,7 @@ impl State {
                         for digit in self
                             .number_stack
                             .iter()
-                            .map(|x| x.to_digit(10).unwrap() as i64)
+                            .map(|x| i64::from(x.to_digit(10).unwrap()))
                         {
                             number = number * 10 + digit;
                         }
@@ -476,7 +512,7 @@ impl State {
             }
         };
 
-        let mut instruction = self.get_instruction(self.location)?.clone();
+        let mut instruction = *self.get_instruction(self.location)?;
         if self.inverse_mode {
             instruction = match instruction {
                 '(' => ')',
@@ -530,7 +566,7 @@ impl State {
             // Transfer the top of control stack to the main stack
             ']' => {
                 let x = self.pop_ctrl()?;
-                self.stack.push(x)
+                self.stack.push(x);
             }
 
             // Swap the top item with the top of control stack
@@ -543,20 +579,19 @@ impl State {
 
             // Write the top item to stdout as a character
             'w' => {
-                if !self.inverse_mode {
-                    let x = self.pop_main()?;
-                    self.output_stack.push(x);
-                } else {
+                if self.inverse_mode {
                     match self.output_stack.pop() {
                         None => return Err(BefreakError::EmptyOutputStack),
                         Some(x) => self.stack.push(x),
                     };
+                } else {
+                    let x = self.pop_main()?;
+                    self.output_stack.push(x);
                 }
             }
 
             // Read a character from stdin to the top of stack
             'r' => todo!(),
-
 
             // Increment the top item
             '\'' => match self.stack.last_mut() {
@@ -603,11 +638,9 @@ impl State {
             }
 
             // Bitwise NOT the top item
-            '~' => {
-                match self.stack.last() {
-                    None => return Err(BefreakError::EmptyMainStack),
-                    Some(x) => *self.stack.last_mut().unwrap() = !x,
-                }
+            '~' => match self.stack.last() {
+                None => return Err(BefreakError::EmptyMainStack),
+                Some(x) => *self.stack.last_mut().unwrap() = !x,
             },
 
             // Bitwise AND top two items, XOR'ing to the third
@@ -645,14 +678,17 @@ impl State {
             '{' => {
                 let x = self.pop_main()?;
                 let y = self.pop_main()?;
-                self.stack.push(y.rotate_left(x as u32));
+                // TODO: figure out how to make this work well with negative values of x
+                // maybe do a manual conversion modulo 64 or similar?
+                // also don't just unwrap it smh my head
+                self.stack.push(y.rotate_left(u32::try_from(x).unwrap()));
                 self.stack.push(x);
             }
             // Rotate "y" to the right "x" bits
             '}' => {
                 let x = self.pop_main()?;
                 let y = self.pop_main()?;
-                self.stack.push(y.rotate_right(x as u32));
+                self.stack.push(y.rotate_right(u32::try_from(x).unwrap()));
                 self.stack.push(x);
             }
 
@@ -664,7 +700,7 @@ impl State {
                 let top = self.pop_main()?;
                 let next = self.pop_main()?;
                 if next == top {
-                    self.toggle_control_stack()
+                    self.toggle_control_stack();
                 }
                 self.stack.push(next);
                 self.stack.push(top);
@@ -675,7 +711,7 @@ impl State {
                 let top = self.pop_main()?;
                 let next = self.pop_main()?;
                 if next < top {
-                    self.toggle_control_stack()
+                    self.toggle_control_stack();
                 }
                 self.stack.push(next);
                 self.stack.push(top);
@@ -686,7 +722,7 @@ impl State {
                 let top = self.pop_main()?;
                 let next = self.pop_main()?;
                 if next > top {
-                    self.toggle_control_stack()
+                    self.toggle_control_stack();
                 }
                 self.stack.push(next);
                 self.stack.push(top);
@@ -820,7 +856,7 @@ impl State {
                 }
                 Direction::West => {
                     let dir = self.control_stack.pop();
-                    if dir == Some(self.inverse_mode as i64) {
+                    if dir == Some(i64::from(self.inverse_mode)) {
                         self.direction = Direction::South;
                     } else if dir == Some(i64::from(!self.inverse_mode)) {
                         self.direction = Direction::North;
@@ -928,32 +964,21 @@ impl State {
     }
 
     fn pop_main(&mut self) -> Result<i64, BefreakError> {
-        match self.stack.pop() {
-            None => Err(BefreakError::EmptyMainStack),
-            Some(num) => Ok(num),
-        }
+        self.stack.pop().ok_or(BefreakError::EmptyMainStack)
     }
 
     fn pop_ctrl(&mut self) -> Result<i64, BefreakError> {
-        match self.control_stack.pop() {
-            None => Err(BefreakError::EmptyControlStack),
-            Some(num) => Ok(num),
-        }
+        self.control_stack
+            .pop()
+            .ok_or(BefreakError::EmptyControlStack)
     }
 
     fn toggle_control_stack(&mut self) {
         *self.control_stack.last_mut().unwrap() ^= 1;
     }
 
-    // TODO: make getting to the end more reasonable.
-    // maybe run a reset command?
-    fn end(&mut self) -> () {
-        /*if self.info_level == InfoLevel::AtCompletion {
-            for char in self.output_stack.iter() {
-                print!("{}", *char as u8 as char);
-            }
-        }*/
-        std::process::exit(0);
+    fn end(&mut self) {
+        self.finished = true;
     }
 }
 
