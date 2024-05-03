@@ -376,7 +376,7 @@ impl eframe::App for AppState {
             ui.separator();
 
             ui.add(egui::github_link_file!(
-                "github.com/PartyWumpus/befreak-interpreter",
+                "https://github.com/PartyWumpus/befreak-interpreter",
                 "Source code."
             ));
 
