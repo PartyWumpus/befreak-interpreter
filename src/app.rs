@@ -7,15 +7,17 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 
 // for file read
-use std::fs::File;
-use std::io::{self, BufRead};
-use std::path::Path;
+// use std::fs::File;
+// use std::io::{self, BufRead};
+// use std::path::Path;
 
 // TODO: add file editing:
 // changing individual characters
 // changing grid size
 
 // TODO: split stuff into several files
+
+// TODO: make it so turning around on a @ actually works
 
 static PRESETS: phf::Map<&'static str, &'static str> = phf_map! {
 "hello world 1" =>r#"
@@ -271,10 +273,8 @@ impl eframe::App for AppState {
                 // NOTE: no File->Quit on web pages!
                 let is_web = cfg!(target_arch = "wasm32");
                 ui.menu_button("File", |ui| {
-                    if !is_web {
-                        if ui.button("Quit").clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
+                    if !is_web && ui.button("Quit").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     if ui.button("New File").clicked() {
                         self.error = None;
@@ -484,6 +484,7 @@ impl Default for State {
 }
 
 impl State {
+    /*
     fn _new_load_file<P>(path: P) -> Self
     where
         P: AsRef<Path>,
@@ -503,14 +504,17 @@ impl State {
                 ..Self::default()
             },
         }
-    }
+    }*/
 
     fn new_from_string(data: &str) -> Self {
         let mut lines = vec![];
+        let max_length = data.lines().map(str::len).max().unwrap();
         for line in data.lines() {
             // skip lines with no content
             if !line.is_empty() {
-                lines.push(line.chars().collect());
+                let mut x = line.chars().collect::<Vec<char>>();
+                x.resize(max_length, ' ');
+                lines.push(x);
             }
         }
         let code = Array2D::from_rows(&lines).unwrap();
@@ -520,13 +524,13 @@ impl State {
             Some(location) => Self {
                 location,
                 code,
-                ..Default::default()
+                ..Self::default()
             },
         }
     }
 
     fn new_empty() -> Self {
-        Default::default()
+        Self::default()
     }
 
     fn reset(&mut self) {
@@ -579,12 +583,18 @@ impl State {
             Direction::West => Direction::East,
         };
         self.inverse_mode = !self.inverse_mode;
-        if run_inverse {self.process_instruction()? };
+        if run_inverse {
+            self.process_instruction()?;
+        };
         Ok(())
     }
 
     fn move_location(&mut self) {
-        let Self { location, direction, .. } = self;
+        let Self {
+            location,
+            direction,
+            ..
+        } = self;
         self.location = match direction {
             Direction::North => (location.0, location.1 - 1),
             Direction::South => (location.0, location.1 + 1),
@@ -689,11 +699,6 @@ impl State {
             }
         }
 
-        // TODO: do error recovery better
-        // values should ALWAYS be put back on the stack 
-        // if an error occurs at any point
-        // perhaps don't use ? anymore
-
         match instruction {
             // Push a zero onto the stack
             '(' => self.stack.push(0),
@@ -754,15 +759,13 @@ impl State {
 
             // Add the top item to the next item
             '+' => {
-                let top = self.pop_main()?;
-                let next = self.pop_main()?;
+                let [top, next] = self.pop_many()?;
                 self.stack.push(next.overflowing_add(top).0);
                 self.stack.push(top);
             }
             // Subtract the top item from the next item
             '-' => {
-                let top = self.pop_main()?;
-                let next = self.pop_main()?;
+                let [top, next] = self.pop_many()?;
                 self.stack.push(next.overflowing_sub(top).0);
                 self.stack.push(top);
             }
@@ -770,17 +773,14 @@ impl State {
             // Divide next by top, leaving a quotient and remainder
             // [y] [x] -> [y/x] [y%x] [x]
             '%' => {
-                let x = self.pop_main()?;
-                let y = self.pop_main()?;
+                let [x, y] = self.pop_many()?;
                 self.stack.push(y / x);
                 self.stack.push(y % x);
                 self.stack.push(x);
             }
             // Undo the effects of %, using multiplication
             '*' => {
-                let top = self.pop_main()?;
-                let remainder = self.pop_main()?;
-                let quotient = self.pop_main()?;
+                let [top, remainder, quotient] = self.pop_many()?;
                 self.stack.push(quotient * top + remainder);
                 self.stack.push(top);
             }
@@ -794,9 +794,7 @@ impl State {
             // Bitwise AND top two items, XOR'ing to the third
             // [z] [y] [x] -> [z^(y&x)] [y] [x]
             '&' => {
-                let x = self.pop_main()?;
-                let y = self.pop_main()?;
-                let z = self.pop_main()?;
+                let [x, y, z] = self.pop_many()?;
                 self.stack.push(z ^ (y & x));
                 self.stack.push(y);
                 self.stack.push(x);
@@ -804,9 +802,7 @@ impl State {
             // Bitwise OR top two items, XOR'ing to the third
             // [z] [y] [x] -> [z^(y|x)] [y] [x]
             '|' => {
-                let x = self.pop_main()?;
-                let y = self.pop_main()?;
-                let z = self.pop_main()?;
+                let [x, y, z] = self.pop_many()?;
                 self.stack.push(z ^ (y | x));
                 self.stack.push(y);
                 self.stack.push(x);
@@ -814,8 +810,7 @@ impl State {
             // Bitwise XOR the top item to the next item
             // [y] [x] -> [y^x] [x]
             '#' => {
-                let x = self.pop_main()?;
-                let y = self.pop_main()?;
+                let [x, y] = self.pop_many()?;
                 self.stack.push(y ^ x);
                 self.stack.push(x);
             }
@@ -824,8 +819,7 @@ impl State {
             // Rotate "y" to the left "x" bits
             //[y] [x] -> [y'] [x]
             '{' => {
-                let x = self.pop_main()?;
-                let y = self.pop_main()?;
+                let [x, y] = self.pop_many()?;
                 // TODO: figure out how to make this work well with negative values of x
                 // maybe do a manual conversion modulo 64 or similar?
                 // also don't just unwrap it smh my head
@@ -834,8 +828,7 @@ impl State {
             }
             // Rotate "y" to the right "x" bits
             '}' => {
-                let x = self.pop_main()?;
-                let y = self.pop_main()?;
+                let [x, y] = self.pop_many()?;
                 self.stack.push(y.rotate_right(u32::try_from(x).unwrap()));
                 self.stack.push(x);
             }
@@ -845,8 +838,7 @@ impl State {
 
             // If y equals x, toggle top of control stack
             '=' => {
-                let top = self.pop_main()?;
-                let next = self.pop_main()?;
+                let [top, next] = self.pop_many()?;
                 if next == top {
                     self.toggle_control_stack();
                 }
@@ -856,8 +848,7 @@ impl State {
 
             // If y is less than x, toggle top of control stack
             'l' => {
-                let top = self.pop_main()?;
-                let next = self.pop_main()?;
+                let [top, next] = self.pop_many()?;
                 if next < top {
                     self.toggle_control_stack();
                 }
@@ -867,8 +858,7 @@ impl State {
 
             // If y is greater than x, toggle top of control stack
             'g' => {
-                let top = self.pop_main()?;
-                let next = self.pop_main()?;
+                let [top, next] = self.pop_many()?;
                 if next > top {
                     self.toggle_control_stack();
                 }
@@ -878,8 +868,7 @@ impl State {
 
             // Swap the top two items
             's' => {
-                let top = self.pop_main()?;
-                let next = self.pop_main()?;
+                let [top, next] = self.pop_many()?;
                 self.stack.push(top);
                 self.stack.push(next);
             }
@@ -887,9 +876,7 @@ impl State {
             // Dig the third item to the top
             // [z] [y] [x] -> [y] [x] [z]
             'd' => {
-                let x = self.pop_main()?;
-                let y = self.pop_main()?;
-                let z = self.pop_main()?;
+                let [x, y, z] = self.pop_many()?;
                 self.stack.push(y);
                 self.stack.push(x);
                 self.stack.push(z);
@@ -897,9 +884,7 @@ impl State {
             // Bury the first item under the next two
             // [z] [y] [x] -> [x] [z] [y]
             'b' => {
-                let x = self.pop_main()?;
-                let y = self.pop_main()?;
-                let z = self.pop_main()?;
+                let [x, y, z] = self.pop_many()?;
                 self.stack.push(x);
                 self.stack.push(z);
                 self.stack.push(y);
@@ -907,9 +892,7 @@ impl State {
             // Flip the order of the top three items
             // [z] [y] [x] -> [x] [y] [z]
             'f' => {
-                let x = self.pop_main()?;
-                let y = self.pop_main()?;
-                let z = self.pop_main()?;
+                let [x, y, z] = self.pop_many()?;
                 self.stack.push(x);
                 self.stack.push(y);
                 self.stack.push(z);
@@ -917,9 +900,7 @@ impl State {
             // Swap the second and third items
             // [z] [y] [x] -> [y] [z] [x]
             'c' => {
-                let x = self.pop_main()?;
-                let y = self.pop_main()?;
-                let z = self.pop_main()?;
+                let [x, y, z] = self.pop_many()?;
                 self.stack.push(y);
                 self.stack.push(z);
                 self.stack.push(x);
@@ -927,8 +908,7 @@ impl State {
             // "Over": dig copy of second item to the top
             // [y] [x] -> [y] [x] [y]
             'o' => {
-                let x = self.pop_main()?;
-                let y = self.pop_main()?;
+                let [x, y] = self.pop_many()?;
                 self.stack.push(y);
                 self.stack.push(x);
                 self.stack.push(y);
@@ -936,9 +916,7 @@ impl State {
             // "Under": the inverse of "over"
             // [y] [x] [y] -> [y] [x]
             'u' => {
-                let y1 = self.pop_main()?;
-                let x = self.pop_main()?;
-                let y2 = self.pop_main()?;
+                let [y1, x, y2] = self.pop_many()?;
                 if y1 != y2 {
                     self.stack.push(y2);
                     self.stack.push(x);
@@ -958,8 +936,7 @@ impl State {
             // Unduplicate the top two items
             // [x] [x] -> [x]
             ';' => {
-                let x1 = self.pop_main()?;
-                let x2 = self.pop_main()?;
+                let [x1, x2] = self.pop_many()?;
                 if x1 != x2 {
                     self.stack.push(x2);
                     self.stack.push(x1);
@@ -1141,6 +1118,7 @@ impl State {
                     self.direction = Direction::South;
                 }
             },
+
             ' ' => (),
             _ => unreachable!(),
         };
@@ -1149,6 +1127,15 @@ impl State {
 
     fn pop_main(&mut self) -> Result<i64, BefreakError> {
         self.stack.pop().ok_or(BefreakError::EmptyMainStack)
+    }
+
+    fn pop_many<const LENGTH: usize>(&mut self) -> Result<[i64; LENGTH], BefreakError> {
+        // if this errored mid-way through popping it would become impossible to recover from
+        if self.stack.len() < LENGTH {
+            Err(BefreakError::EmptyMainStack)
+        } else {
+            Ok(core::array::from_fn(|_| self.stack.pop().unwrap()))
+        }
     }
 
     fn pop_ctrl(&mut self) -> Result<i64, BefreakError> {
