@@ -122,6 +122,7 @@ enum Direction {
 #[derive(Debug)]
 enum BefreakError {
     InvalidPosition,
+    InvalidOperation,
     EmptyMainStack,
     EmptyControlStack,
     EmptyOutputStack,
@@ -129,6 +130,7 @@ enum BefreakError {
     InvalidUnduplicate,
     InvalidPopZero,
     InvalidUnder,
+    InvalidStringRemoval,
 }
 
 impl std::error::Error for BefreakError {}
@@ -136,10 +138,11 @@ impl std::error::Error for BefreakError {}
 impl std::fmt::Display for BefreakError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let str = match self {
-            Self::InvalidPosition => "Attempted to enter a position outside the grid",
-            Self::EmptyMainStack => "Attempted to pop off the stack but it was empty",
-            Self::EmptyControlStack => "Attempted to pop off the control stack but it was empty",
-            Self::EmptyOutputStack => "Attempted to pop off the output stack but it was empty",
+            Self::InvalidPosition => "Tried to enter a position outside the grid",
+            Self::InvalidOperation => "Tried to run an invalid operator",
+            Self::EmptyMainStack => "Tried to pop off the stack but it was empty",
+            Self::EmptyControlStack => "Tried to pop off the control stack but it was empty",
+            Self::EmptyOutputStack => "Tried to pop off the output stack but it was empty",
             Self::NonBoolInControlStack => {
                 "Tried to use the control stack but a non boolean value was at the top"
             }
@@ -150,13 +153,22 @@ impl std::fmt::Display for BefreakError {
             Self::InvalidUnder => {
                 "Tried to do under but the top and third values were not identical"
             }
+            Self::InvalidStringRemoval => "Tried to remove a string but it did not match",
         };
         write!(f, "{str}")
     }
 }
 
 #[derive(Debug)]
-struct State {
+enum ExecutionState {
+    NotStarted,
+    Running,
+    Done,
+    Error(BefreakError),
+}
+
+#[derive(Debug)]
+struct BefreakState {
     stack: Vec<i64>,
     control_stack: Vec<i64>,
     location: (usize, usize),
@@ -164,10 +176,10 @@ struct State {
     output_stack: Vec<i64>,
     direction_reversed: bool,
     inverse_mode: bool,
-    ascii_mode: bool,
+    string_mode: bool,
     number_stack: Vec<char>,
 
-    finished: bool,
+    state: ExecutionState,
     step: u64,
 
     // constants
@@ -175,84 +187,55 @@ struct State {
 }
 
 pub struct AppState {
-    state: State,
+    befreak_state: BefreakState,
     speed: f32,
     //cursor_position: (usize, usize),
     paused: bool,
     previous_instant: Instant,
-    //extra: bool,
-    error: Option<BefreakError>,
+    extra: bool,
     text_channel: (Sender<String>, Receiver<String>),
 }
 
 impl AppState {
     /// Called once before the first frame.
-    pub fn new(__cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         // This is also where you can customize the look and feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
 
         Self {
-            state: State::new_empty(),
+            befreak_state: BefreakState::new_empty(),
             //state: State::new_load_file("primes1"),
             text_channel: channel(),
             //cursor_position: (0, 0), //TODO: use this for editing
             previous_instant: Instant::now(),
             paused: true,
-            //extra: false, //TODO: use this for displaying more info
-            error: None,
+            extra: false,
             speed: 5.0,
         }
     }
 }
 
 impl AppState {
-    fn handle_err(&mut self, err: Result<(), BefreakError>) {
-        match err {
-            Ok(..) => (),
-            Err(err) => {
-                self.error = Some(err);
-                self.paused = true;
-            }
-        }
-    }
-
     fn reset(&mut self) {
-        self.error = None;
-        self.state.reset();
+        self.befreak_state.reset();
     }
 
     fn step(&mut self) {
-        // if we are finished and try and step, we should restart
-        if self.state.finished {
-            self.reset();
-        }
+        self.befreak_state.checked_step();
 
-        if self.error.is_none() {
-            let x = self.state.step();
-            self.handle_err(x);
-        }
-
-        if self.state.finished {
+        if !matches!(self.befreak_state.state, ExecutionState::Running) {
             self.paused = true;
         }
     }
 
     fn load(&mut self, data: &str) {
-        self.state = State::new_from_string(data);
+        self.befreak_state = BefreakState::new_from_string(data);
         self.paused = true;
         self.reset();
     }
 
     fn reverse_direction(&mut self) {
-        // if there was an error then cleanup code was already called
-        let x;
-        if self.error.is_some() {
-            x = self.state.reverse_direction(false);
-            self.error = None;
-        } else {
-            x = self.state.reverse_direction(true);
-        }
-        self.handle_err(x);
+        self.befreak_state.checked_reverse_direction();
     }
 }
 
@@ -263,7 +246,7 @@ impl eframe::App for AppState {
         // For inspiration and more examples, go to https://emilk.github.io/egui
         //
         if let Ok(text) = self.text_channel.1.try_recv() {
-            self.state = State::new_from_string(&text);
+            self.befreak_state = BefreakState::new_from_string(&text);
         }
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
@@ -277,8 +260,7 @@ impl eframe::App for AppState {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     if ui.button("New File").clicked() {
-                        self.error = None;
-                        self.state = State::new_empty();
+                        self.befreak_state = BefreakState::new_empty();
                     }
                     if ui.button("📂 Open text file").clicked() {
                         let sender = self.text_channel.0.clone();
@@ -299,7 +281,7 @@ impl eframe::App for AppState {
 
                     if ui.button("💾 Save text to file").clicked() {
                         let task = rfd::AsyncFileDialog::new().save_file();
-                        let contents = self.state.serialize();
+                        let contents = self.befreak_state.serialize();
                         execute(async move {
                             let file = task.await;
                             if let Some(file) = file {
@@ -309,11 +291,15 @@ impl eframe::App for AppState {
                     }
                 });
 
+                ui.menu_button("Settings", |ui| {
+                    ui.checkbox(&mut self.extra, "extra info");
+                });
+
                 ui.menu_button("Presets", |ui| {
                     for key in PRESETS.keys() {
                         if ui.button(*key).clicked() {
                             match PRESETS.get(key) {
-                                None => todo!(),
+                                None => unreachable!(),
                                 Some(data) => self.load(data),
                             }
                         }
@@ -328,8 +314,9 @@ impl eframe::App for AppState {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let time_per_step = Duration::from_millis((500.0 - 49.0 * self.speed) as u64);
-            if !self.paused && self.error.is_none() {
-                if self.previous_instant.elapsed() >= time_per_step {
+            let elapsed = self.previous_instant.elapsed();
+            if !self.paused {
+                if elapsed >= time_per_step {
                     self.step();
                     self.previous_instant = Instant::now();
                 }
@@ -340,35 +327,46 @@ impl eframe::App for AppState {
             // The central panel the region left after adding TopPanel's and SidePanel's
             ui.horizontal(|ui| {
                 ui.heading("Befreak interpreter");
-                ui.label("step: ");
-                ui.label(self.state.step.to_string());
-                if let Some(error) = &self.error {
+                if let ExecutionState::Error(error) = &self.befreak_state.state {
                     ui.label(egui::RichText::new(error.to_string()).color(egui::Color32::RED));
                 };
             });
 
             ui.horizontal(|ui| {
-                ui.add_enabled_ui(self.error.is_none(), |ui| {
-                    if ui.button("step").clicked() {
-                        self.step();
-                    };
-                    if ui
-                        .button(if self.paused { "unpause" } else { "pause" })
-                        .clicked()
-                    {
-                        self.paused = !self.paused;
-                    };
-                });
-                if ui
-                    .button(if self.state.direction_reversed {
-                        "go forwards"
-                    } else {
-                        "go backwards"
-                    })
-                    .clicked()
-                {
-                    self.reverse_direction();
-                }
+                ui.add_enabled_ui(
+                    !matches!(self.befreak_state.state, ExecutionState::Error(..)),
+                    |ui| {
+                        if ui.button("step").clicked() {
+                            self.step();
+                            if matches!(self.befreak_state.state, ExecutionState::Running) {
+                                self.paused = true;
+                            }
+                        };
+                        if ui
+                            .button(if self.paused { "unpause" } else { "pause" })
+                            .clicked()
+                        {
+                            self.paused = !self.paused;
+                        };
+                    },
+                );
+
+                ui.add_enabled_ui(
+                    !matches!(self.befreak_state.state, ExecutionState::NotStarted),
+                    |ui| {
+                        if ui
+                            .button(if self.befreak_state.direction_reversed {
+                                "go forwards"
+                            } else {
+                                "go backwards"
+                            })
+                            .clicked()
+                        {
+                            self.reverse_direction();
+                        }
+                    },
+                );
+
                 if ui.button("restart").clicked() {
                     self.reset();
                     self.paused = true;
@@ -383,7 +381,7 @@ impl eframe::App for AppState {
                     cols[0].vertical_centered_justified(|ui| {
                         ui.label("output");
                         let output = &self
-                            .state
+                            .befreak_state
                             .output_stack
                             .iter()
                             .map(|x| *x as u8 as char)
@@ -394,7 +392,7 @@ impl eframe::App for AppState {
                     cols[1].vertical_centered_justified(|ui| {
                         ui.label("primary stack");
                         ui.horizontal(|ui| {
-                            for value in &self.state.stack {
+                            for value in &self.befreak_state.stack {
                                 ui.label(value.to_string());
                             }
                         })
@@ -402,7 +400,7 @@ impl eframe::App for AppState {
                     cols[2].vertical_centered_justified(|ui| {
                         ui.label("control stack");
                         ui.horizontal(|ui| {
-                            for value in &self.state.control_stack {
+                            for value in &self.befreak_state.control_stack {
                                 ui.label(value.to_string());
                             }
                         })
@@ -412,16 +410,75 @@ impl eframe::App for AppState {
 
             ui.separator();
 
+            if self.extra {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label("execution state");
+                        ui.label(format!("{:?}", self.befreak_state.state));
+                    });
+                    ui.vertical(|ui| {
+                        ui.label("step");
+                        ui.label(self.befreak_state.step.to_string());
+                    });
+                    ui.vertical(|ui| {
+                        ui.label("location");
+                        ui.label(format!("{:?}", self.befreak_state.location));
+                    });
+                    ui.vertical(|ui| {
+                        ui.label("direction");
+                        ui.label(format!("{:?}", self.befreak_state.direction));
+                    });
+                    ui.vertical(|ui| {
+                        ui.label("inverse mode");
+                        ui.label(format!("{:?}", self.befreak_state.inverse_mode));
+                    });
+                    ui.vertical(|ui| {
+                        ui.label("string mode");
+                        ui.label(format!("{:?}", self.befreak_state.string_mode));
+                    });
+                    ui.vertical(|ui| {
+                        ui.label("time diff");
+                        ui.label(format!("{:.3?}", elapsed));
+                    });
+                    for value in &self.befreak_state.stack {
+                        ui.label(String::from(*value as u8 as char));
+                    }
+                });
+                ui.separator();
+            }
+
+            //TODO: different colours depending on state?
+            let cursor_color = match self.befreak_state {
+                BefreakState {
+                    inverse_mode: true,
+                    string_mode: true,
+                    ..
+                } => egui::Color32::LIGHT_RED,
+                BefreakState {
+                    inverse_mode: true,
+                    string_mode: false,
+                    ..
+                } => egui::Color32::RED,
+                BefreakState {
+                    inverse_mode: false,
+                    string_mode: true,
+                    ..
+                } => egui::Color32::LIGHT_BLUE,
+                BefreakState {
+                    inverse_mode: false,
+                    string_mode: false,
+                    ..
+                } => egui::Color32::BLUE,
+            };
+
             egui::Grid::new("letter_grid")
                 .spacing([0.0, 0.0])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    for (index_y, row) in self.state.code.rows_iter().enumerate() {
+                    for (index_y, row) in self.befreak_state.code.rows_iter().enumerate() {
                         for (index_x, c) in row.enumerate() {
-                            if self.state.location == (index_x, index_y) {
-                                ui.label(
-                                    egui::RichText::new(*c).background_color(egui::Color32::RED),
-                                );
+                            if self.befreak_state.location == (index_x, index_y) {
+                                ui.label(egui::RichText::new(*c).background_color(cursor_color));
                             } else {
                                 ui.label(c.to_string());
                             }
@@ -464,7 +521,7 @@ fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
     });
 }
 
-impl Default for State {
+impl Default for BefreakState {
     fn default() -> Self {
         Self {
             stack: vec![],
@@ -474,16 +531,16 @@ impl Default for State {
             output_stack: vec![],
             direction_reversed: false,
             inverse_mode: false,
-            ascii_mode: false,
+            string_mode: false,
             number_stack: vec![],
             step: 0,
-            finished: false,
+            state: ExecutionState::NotStarted,
             code: Array2D::filled_with(' ', 10, 10),
         }
     }
 }
 
-impl State {
+impl BefreakState {
     /*
     fn _new_load_file<P>(path: P) -> Self
     where
@@ -573,8 +630,20 @@ impl State {
             .ok_or(BefreakError::InvalidPosition)
     }
 
+    fn checked_reverse_direction(&mut self) {
+        let run_step = matches!(self.state, ExecutionState::Running);
+
+        match self.reverse_direction(run_step) {
+            Ok(..) => (),
+            Err(err) => self.state = ExecutionState::Error(err),
+        }
+    }
+
     // TODO: fix reversing while processing a number
-    fn reverse_direction(&mut self, run_inverse: bool) -> Result<(), BefreakError> {
+    // // possibly do by just having numbers processed all in one go
+    // // would be nice if the number actually entered the stack BEFORE
+    // // the next operation, which this would do
+    fn reverse_direction(&mut self, run_step: bool) -> Result<(), BefreakError> {
         self.direction_reversed = !self.direction_reversed;
         self.direction = match self.direction {
             Direction::North => Direction::South,
@@ -583,9 +652,13 @@ impl State {
             Direction::West => Direction::East,
         };
         self.inverse_mode = !self.inverse_mode;
-        if run_inverse {
-            self.process_instruction()?;
+        if matches!(self.state, ExecutionState::Error(..)) {
+            self.state = ExecutionState::Running;
         };
+        if run_step {
+            self.recover_from_state();
+            self.process_instruction()?;
+        }
         Ok(())
     }
 
@@ -601,6 +674,41 @@ impl State {
             Direction::East => (location.0 + 1, location.1),
             Direction::West => (location.0 - 1, location.1),
         };
+    }
+
+    // TODO: this is a shit name. rename it
+    fn recover_from_state(&mut self) {
+        match self.state {
+            ExecutionState::Done => {
+                if !self.direction_reversed {
+                    self.reset();
+                }
+                self.state = ExecutionState::Running;
+            }
+
+            ExecutionState::NotStarted => {
+                if self.direction_reversed {
+                    self.reset();
+                    self.state = ExecutionState::Running;
+                } else {
+                    self.state = ExecutionState::Running;
+                }
+            }
+
+            ExecutionState::Error(..) => (),
+            ExecutionState::Running => (),
+        }
+    }
+
+    fn checked_step(&mut self) {
+        self.recover_from_state();
+
+        if matches!(self.state, ExecutionState::Running) {
+            match self.step() {
+                Ok(..) => (),
+                Err(err) => self.state = ExecutionState::Error(err),
+            }
+        }
     }
 
     fn step(&mut self) -> Result<(), BefreakError> {
@@ -619,10 +727,17 @@ impl State {
     }
 
     fn process_instruction(&mut self) -> Result<(), BefreakError> {
-        if self.ascii_mode {
+        if self.string_mode {
             let char = self.get_instruction(self.location)?;
             if *char == '"' {
-                self.ascii_mode = false;
+                self.string_mode = false;
+            } else if self.inverse_mode {
+                let char = *char as i64;
+                let current = self.pop_main()?;
+                if char != current {
+                    self.stack.push(current);
+                    return Err(BefreakError::InvalidStringRemoval);
+                };
             } else {
                 self.stack.push(*char as i64);
             }
@@ -834,13 +949,13 @@ impl State {
             }
 
             // Toggle top of control stack (i.e., XOR it with 1)
-            '!' => self.toggle_control_stack(),
+            '!' => self.toggle_control_stack()?,
 
             // If y equals x, toggle top of control stack
             '=' => {
                 let [top, next] = self.pop_many()?;
                 if next == top {
-                    self.toggle_control_stack();
+                    self.toggle_control_stack()?;
                 }
                 self.stack.push(next);
                 self.stack.push(top);
@@ -850,7 +965,7 @@ impl State {
             'l' => {
                 let [top, next] = self.pop_many()?;
                 if next < top {
-                    self.toggle_control_stack();
+                    self.toggle_control_stack()?;
                 }
                 self.stack.push(next);
                 self.stack.push(top);
@@ -860,7 +975,7 @@ impl State {
             'g' => {
                 let [top, next] = self.pop_many()?;
                 if next > top {
-                    self.toggle_control_stack();
+                    self.toggle_control_stack()?;
                 }
                 self.stack.push(next);
                 self.stack.push(top);
@@ -945,13 +1060,20 @@ impl State {
                 self.stack.push(x1);
             }
             // Enter string mode
-            '"' => self.ascii_mode = true,
+            '"' => self.string_mode = true,
             // Toggle inverse mode
             // the doc says "toggle reverse mode", which doesn't make any sense, as a reverse
             // mode toggle would just undo the whole program back to the start
             '?' => self.inverse_mode = !self.inverse_mode,
             // Halt. Also signals the entrance point for the program
-            '@' => self.end(),
+            '@' => {
+                if self.direction_reversed {
+                    self.state = ExecutionState::NotStarted;
+                    self.reverse_direction(false)?;
+                } else {
+                    self.state = ExecutionState::Done;
+                }
+            }
             // If going east or west, turn right; otherwise, turn left
             '\\' => {
                 self.direction = match self.direction {
@@ -1003,7 +1125,7 @@ impl State {
                     }
                 }
                 Direction::East => {
-                    self.toggle_control_stack();
+                    self.toggle_control_stack()?;
                     self.inverse_mode = !self.inverse_mode;
                     self.direction = Direction::West;
                 }
@@ -1040,7 +1162,7 @@ impl State {
                     }
                 }
                 Direction::West => {
-                    self.toggle_control_stack();
+                    self.toggle_control_stack()?;
                     self.inverse_mode = !self.inverse_mode;
                     self.direction = Direction::East;
                 }
@@ -1076,7 +1198,7 @@ impl State {
                     }
                 }
                 Direction::South => {
-                    self.toggle_control_stack();
+                    self.toggle_control_stack()?;
                     self.inverse_mode = !self.inverse_mode;
                     self.direction = Direction::North;
                 }
@@ -1113,14 +1235,14 @@ impl State {
                     }
                 }
                 Direction::North => {
-                    self.toggle_control_stack();
+                    self.toggle_control_stack()?;
                     self.inverse_mode = !self.inverse_mode;
                     self.direction = Direction::South;
                 }
             },
 
             ' ' => (),
-            _ => unreachable!(),
+            _ => return Err(BefreakError::InvalidOperation),
         };
         Ok(())
     }
@@ -1144,12 +1266,12 @@ impl State {
             .ok_or(BefreakError::EmptyControlStack)
     }
 
-    fn toggle_control_stack(&mut self) {
+    fn toggle_control_stack(&mut self) -> Result<(), BefreakError> {
+        if self.control_stack.is_empty() {
+            return Err(BefreakError::EmptyControlStack);
+        }
         *self.control_stack.last_mut().unwrap() ^= 1;
-    }
-
-    fn end(&mut self) {
-        self.finished = true;
+        Ok(())
     }
 }
 
