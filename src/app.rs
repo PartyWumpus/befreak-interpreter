@@ -15,6 +15,8 @@ use std::path::Path;
 // changing individual characters
 // changing grid size
 
+// TODO: split stuff into several files
+
 static PRESETS: phf::Map<&'static str, &'static str> = phf_map! {
 "hello world 1" =>r#"
 /"Hello world!"01\
@@ -64,6 +66,34 @@ static PRESETS: phf::Map<&'static str, &'static str> = phf_map! {
        1    b       
        (    l       
        >)u%d/       
+       c            
+       >b'%s(= \    
+     ^ >dc=c*s)/    
+     >=<            
+     d              
+     (              
+/s'0v^?w23(v`s]:(48\
+[   (      )       +
+)   =      =       4
+0   c      c       8
+1   =      =       )
+%   )      (       w
+\01(^      ^)01*01(/"#,
+
+"error test" => r#"
+    /2)@(2\         
+    >)2=2(<         
+    \'(v?)/         
+       s            
+       (            
+       1            
+       >(1=1\       
+       )            
+       1    o       
+       {    *       
+       1    b       
+       (    l       
+       >)u%b/       
        c            
        >b'%s(= \    
      ^ >dc=c*s)/    
@@ -130,7 +160,7 @@ struct State {
     location: (usize, usize),
     direction: Direction,
     output_stack: Vec<i64>,
-    direction_reversed: bool, // TODO:
+    direction_reversed: bool,
     inverse_mode: bool,
     ascii_mode: bool,
     number_stack: Vec<char>,
@@ -177,7 +207,10 @@ impl AppState {
     fn handle_err(&mut self, err: Result<(), BefreakError>) {
         match err {
             Ok(..) => (),
-            Err(err) => self.error = Some(err),
+            Err(err) => {
+                self.error = Some(err);
+                self.paused = true;
+            }
         }
     }
 
@@ -187,17 +220,36 @@ impl AppState {
     }
 
     fn step(&mut self) {
+        // if we are finished and try and step, we should restart
+        if self.state.finished {
+            self.reset();
+        }
+
         if self.error.is_none() {
             let x = self.state.step();
             self.handle_err(x);
         }
+
         if self.state.finished {
             self.paused = true;
         }
     }
 
+    fn load(&mut self, data: &str) {
+        self.state = State::new_from_string(data);
+        self.paused = true;
+        self.reset();
+    }
+
     fn reverse_direction(&mut self) {
-        let x = self.state.reverse_direction();
+        // if there was an error then cleanup code was already called
+        let x;
+        if self.error.is_some() {
+            x = self.state.reverse_direction(false);
+            self.error = None;
+        } else {
+            x = self.state.reverse_direction(true);
+        }
         self.handle_err(x);
     }
 }
@@ -262,12 +314,12 @@ impl eframe::App for AppState {
                         if ui.button(*key).clicked() {
                             match PRESETS.get(key) {
                                 None => todo!(),
-                                Some(data) => self.state = State::new_from_string(data),
+                                Some(data) => self.load(data),
                             }
                         }
                     }
                 });
-                
+
                 ui.add_space(16.0);
 
                 egui::widgets::global_dark_light_mode_buttons(ui);
@@ -278,10 +330,6 @@ impl eframe::App for AppState {
             let time_per_step = Duration::from_millis((500.0 - 49.0 * self.speed) as u64);
             if !self.paused && self.error.is_none() {
                 if self.previous_instant.elapsed() >= time_per_step {
-                    if self.speed == 10.00 {
-                        // if speed is max, go double speed
-                        self.step();
-                    }
                     self.step();
                     self.previous_instant = Instant::now();
                 }
@@ -300,21 +348,30 @@ impl eframe::App for AppState {
             });
 
             ui.horizontal(|ui| {
-                if ui.button("step").clicked() {
-                    self.step();
-                };
+                ui.add_enabled_ui(self.error.is_none(), |ui| {
+                    if ui.button("step").clicked() {
+                        self.step();
+                    };
+                    if ui
+                        .button(if self.paused { "unpause" } else { "pause" })
+                        .clicked()
+                    {
+                        self.paused = !self.paused;
+                    };
+                });
                 if ui
-                    .button(if self.paused { "unpause" } else { "pause" })
+                    .button(if self.state.direction_reversed {
+                        "go forwards"
+                    } else {
+                        "go backwards"
+                    })
                     .clicked()
-                    && self.error.is_none()
                 {
-                    self.paused = !self.paused;
-                };
-                if ui.button("reverse").clicked() {
                     self.reverse_direction();
                 }
                 if ui.button("restart").clicked() {
                     self.reset();
+                    self.paused = true;
                 }
                 ui.add(egui::Slider::new(&mut self.speed, 1.0..=10.0).text("speed"));
             });
@@ -513,9 +570,7 @@ impl State {
     }
 
     // TODO: fix reversing while processing a number
-    // easiest solution is making it into a stack so stuff can just be popped off like everywhere
-    // else :)
-    fn reverse_direction(&mut self) -> Result<(), BefreakError> {
+    fn reverse_direction(&mut self, run_inverse: bool) -> Result<(), BefreakError> {
         self.direction_reversed = !self.direction_reversed;
         self.direction = match self.direction {
             Direction::North => Direction::South,
@@ -524,20 +579,24 @@ impl State {
             Direction::West => Direction::East,
         };
         self.inverse_mode = !self.inverse_mode;
-        self.process_instruction()?;
+        if run_inverse {self.process_instruction()? };
         Ok(())
     }
 
-    fn step(&mut self) -> Result<(), BefreakError> {
-        // http://tunes.org/~iepos/befreak.html#reference
-
-        let Self { location, .. } = self;
-        self.location = match self.direction {
+    fn move_location(&mut self) {
+        let Self { location, direction, .. } = self;
+        self.location = match direction {
             Direction::North => (location.0, location.1 - 1),
             Direction::South => (location.0, location.1 + 1),
             Direction::East => (location.0 + 1, location.1),
             Direction::West => (location.0 - 1, location.1),
         };
+    }
+
+    fn step(&mut self) -> Result<(), BefreakError> {
+        // http://tunes.org/~iepos/befreak.html#reference
+
+        self.move_location();
 
         if self.direction_reversed {
             self.step -= 1;
@@ -630,12 +689,19 @@ impl State {
             }
         }
 
+        // TODO: do error recovery better
+        // values should ALWAYS be put back on the stack 
+        // if an error occurs at any point
+        // perhaps don't use ? anymore
+
         match instruction {
             // Push a zero onto the stack
             '(' => self.stack.push(0),
             // Pop a zero from the stack
             ')' => {
-                if self.pop_main()? != 0 {
+                let x = self.pop_main()?;
+                if x != 0 {
+                    self.stack.push(x);
                     return Err(BefreakError::InvalidPopZero);
                 }
             }
@@ -874,6 +940,9 @@ impl State {
                 let x = self.pop_main()?;
                 let y2 = self.pop_main()?;
                 if y1 != y2 {
+                    self.stack.push(y2);
+                    self.stack.push(x);
+                    self.stack.push(y1);
                     return Err(BefreakError::InvalidUnder);
                 }
                 self.stack.push(y1);
@@ -892,6 +961,8 @@ impl State {
                 let x1 = self.pop_main()?;
                 let x2 = self.pop_main()?;
                 if x1 != x2 {
+                    self.stack.push(x2);
+                    self.stack.push(x1);
                     return Err(BefreakError::InvalidUnduplicate);
                 }
                 self.stack.push(x1);
@@ -937,13 +1008,21 @@ impl State {
                     self.control_stack.push(i64::from(self.inverse_mode));
                 }
                 Direction::West => {
-                    let dir = self.control_stack.pop();
-                    if dir == Some(i64::from(self.inverse_mode)) {
-                        self.direction = Direction::South;
-                    } else if dir == Some(i64::from(!self.inverse_mode)) {
-                        self.direction = Direction::North;
-                    } else {
-                        return Err(BefreakError::NonBoolInControlStack);
+                    let maybe_dir = self.control_stack.pop();
+                    match maybe_dir {
+                        None => {
+                            return Err(BefreakError::EmptyControlStack);
+                        }
+                        Some(dir) => {
+                            if dir == i64::from(self.inverse_mode) {
+                                self.direction = Direction::South;
+                            } else if dir == i64::from(!self.inverse_mode) {
+                                self.direction = Direction::North;
+                            } else {
+                                self.control_stack.push(dir);
+                                return Err(BefreakError::NonBoolInControlStack);
+                            }
+                        }
                     }
                 }
                 Direction::East => {
@@ -966,13 +1045,21 @@ impl State {
                     self.control_stack.push(i64::from(!self.inverse_mode));
                 }
                 Direction::East => {
-                    let dir = self.control_stack.pop();
-                    if dir == Some(i64::from(self.inverse_mode)) {
-                        self.direction = Direction::North;
-                    } else if dir == Some(i64::from(!self.inverse_mode)) {
-                        self.direction = Direction::South;
-                    } else {
-                        return Err(BefreakError::NonBoolInControlStack);
+                    let maybe_dir = self.control_stack.pop();
+                    match maybe_dir {
+                        None => {
+                            return Err(BefreakError::EmptyControlStack);
+                        }
+                        Some(dir) => {
+                            if dir == i64::from(self.inverse_mode) {
+                                self.direction = Direction::North;
+                            } else if dir == i64::from(!self.inverse_mode) {
+                                self.direction = Direction::South;
+                            } else {
+                                self.control_stack.push(dir);
+                                return Err(BefreakError::NonBoolInControlStack);
+                            }
+                        }
                     }
                 }
                 Direction::West => {
@@ -995,13 +1082,20 @@ impl State {
                     self.control_stack.push(i64::from(self.inverse_mode));
                 }
                 Direction::North => {
-                    let dir = self.control_stack.pop();
-                    if dir == Some(i64::from(self.inverse_mode)) {
-                        self.direction = Direction::West;
-                    } else if dir == Some(i64::from(!self.inverse_mode)) {
-                        self.direction = Direction::East;
-                    } else {
-                        return Err(BefreakError::NonBoolInControlStack);
+                    let maybe_dir = self.control_stack.pop();
+                    match maybe_dir {
+                        None => {
+                            return Err(BefreakError::EmptyControlStack);
+                        }
+                        Some(dir) => {
+                            if dir == i64::from(self.inverse_mode) {
+                                self.direction = Direction::West;
+                            } else if dir == i64::from(!self.inverse_mode) {
+                                self.direction = Direction::East;
+                            } else {
+                                return Err(BefreakError::NonBoolInControlStack);
+                            }
+                        }
                     }
                 }
                 Direction::South => {
@@ -1024,13 +1118,21 @@ impl State {
                     self.control_stack.push(i64::from(!self.inverse_mode));
                 }
                 Direction::South => {
-                    let dir = self.control_stack.pop();
-                    if dir == Some(i64::from(self.inverse_mode)) {
-                        self.direction = Direction::East;
-                    } else if dir == Some(i64::from(!self.inverse_mode)) {
-                        self.direction = Direction::West;
-                    } else {
-                        return Err(BefreakError::NonBoolInControlStack);
+                    let maybe_dir = self.control_stack.pop();
+                    match maybe_dir {
+                        None => {
+                            return Err(BefreakError::EmptyControlStack);
+                        }
+                        Some(dir) => {
+                            if dir == i64::from(self.inverse_mode) {
+                                self.direction = Direction::East;
+                            } else if dir == i64::from(!self.inverse_mode) {
+                                self.direction = Direction::West;
+                            } else {
+                                self.control_stack.push(dir);
+                                return Err(BefreakError::NonBoolInControlStack);
+                            }
+                        }
                     }
                 }
                 Direction::North => {
