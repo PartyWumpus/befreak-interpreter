@@ -179,6 +179,7 @@ struct BefreakState {
     string_mode: bool,
     number_stack: Vec<char>,
 
+    start_pos: (usize, usize),
     state: ExecutionState,
     step: u64,
 
@@ -213,9 +214,7 @@ impl AppState {
             speed: 5.0,
         }
     }
-}
 
-impl AppState {
     fn reset(&mut self) {
         self.befreak_state.reset();
     }
@@ -231,7 +230,11 @@ impl AppState {
     fn load(&mut self, data: &str) {
         self.befreak_state = BefreakState::new_from_string(data);
         self.paused = true;
-        self.reset();
+    }
+
+    fn new_file(&mut self) {
+        self.befreak_state = BefreakState::new_empty();
+        self.paused = true;
     }
 
     fn reverse_direction(&mut self) {
@@ -246,7 +249,7 @@ impl eframe::App for AppState {
         // For inspiration and more examples, go to https://emilk.github.io/egui
         //
         if let Ok(text) = self.text_channel.1.try_recv() {
-            self.befreak_state = BefreakState::new_from_string(&text);
+            self.load(&text);
         }
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
@@ -260,7 +263,7 @@ impl eframe::App for AppState {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     if ui.button("New File").clicked() {
-                        self.befreak_state = BefreakState::new_empty();
+                        self.new_file();
                     }
                     if ui.button("📂 Open text file").clicked() {
                         let sender = self.text_channel.0.clone();
@@ -521,25 +524,6 @@ fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
     });
 }
 
-impl Default for BefreakState {
-    fn default() -> Self {
-        Self {
-            stack: vec![],
-            control_stack: vec![],
-            location: (0, 0),
-            direction: Direction::East,
-            output_stack: vec![],
-            direction_reversed: false,
-            inverse_mode: false,
-            string_mode: false,
-            number_stack: vec![],
-            step: 0,
-            state: ExecutionState::NotStarted,
-            code: Array2D::filled_with(' ', 10, 10),
-        }
-    }
-}
-
 impl BefreakState {
     /*
     fn _new_load_file<P>(path: P) -> Self
@@ -581,26 +565,62 @@ impl BefreakState {
             Some(location) => Self {
                 location,
                 code,
-                ..Self::default()
+                start_pos: location,
+
+                stack: vec![],
+                control_stack: vec![],
+                direction: Direction::East,
+                output_stack: vec![],
+                direction_reversed: false,
+                inverse_mode: false,
+                string_mode: false,
+                number_stack: vec![],
+                step: 0,
+                state: ExecutionState::NotStarted,
             },
         }
     }
 
     fn new_empty() -> Self {
-        Self::default()
+        let mut code = Array2D::filled_with(' ', 10, 10);
+        let _ = code.set(1, 1, '@');
+
+        Self {
+            location: (1, 1),
+            code,
+            start_pos: (1, 1),
+
+            stack: vec![],
+            control_stack: vec![],
+            direction: Direction::East,
+            output_stack: vec![],
+            direction_reversed: false,
+            inverse_mode: false,
+            string_mode: false,
+            number_stack: vec![],
+            step: 0,
+            state: ExecutionState::NotStarted,
+        }
     }
 
     fn reset(&mut self) {
-        match Self::get_start_pos(&self.code) {
-            None => panic!("No start position"),
-            Some(location) => {
-                *self = Self {
-                    location,
-                    code: self.code.clone(),
-                    ..Self::default()
-                }
-            }
-        };
+        *self = Self {
+            location: self.start_pos,
+            start_pos: self.start_pos,
+            code: self.code.clone(),
+
+            // TODO: I NEED A PARTIAL DEFAULT PLEASE
+            stack: vec![],
+            control_stack: vec![],
+            direction: Direction::East,
+            output_stack: vec![],
+            direction_reversed: false,
+            inverse_mode: false,
+            string_mode: false,
+            number_stack: vec![],
+            step: 0,
+            state: ExecutionState::NotStarted,
+        }
     }
 
     fn serialize(&self) -> String {
@@ -625,6 +645,7 @@ impl BefreakState {
     }
 
     fn get_instruction(&self, location: (usize, usize)) -> Result<&char, BefreakError> {
+        // TODO: make movement wrap around, as that appears to be the intended behaviour
         self.code
             .get(location.1, location.0)
             .ok_or(BefreakError::InvalidPosition)
