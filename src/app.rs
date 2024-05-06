@@ -189,7 +189,9 @@ pub struct AppState {
     speed: f32,
     cursor_position: (usize, usize),
     paused: bool,
-    previous_instant: Instant,
+    time_since_step: Instant,
+    time_since_cursor: Instant,
+    show_cursor: bool,
     extra: bool,
     text_channel: (Sender<String>, Receiver<String>),
 }
@@ -205,8 +207,10 @@ impl AppState {
             //state: State::new_load_file("primes1"),
             text_channel: channel(),
             cursor_position: (0, 0),
-            previous_instant: Instant::now(),
+            time_since_step: Instant::now(),
+            time_since_cursor: Instant::now(),
             paused: true,
+            show_cursor: true,
             extra: false,
             speed: 5.0,
         }
@@ -354,6 +358,8 @@ impl eframe::App for AppState {
                                             (self.cursor_position.0 + 1, self.cursor_position.1);
                                     }
                                 }
+                                self.show_cursor = true;
+                                self.time_since_cursor = Instant::now();
                             }
                             _ => (),
                         }
@@ -364,14 +370,16 @@ impl eframe::App for AppState {
             if let Some(direction) = direction {
                 self.cursor_position = self
                     .befreak_state
-                    .move_location(self.cursor_position, direction)
+                    .move_location(self.cursor_position, direction);
+                self.show_cursor = true;
+                self.time_since_cursor = Instant::now();
             }
             let time_per_step = Duration::from_millis((500.0 - 49.0 * self.speed) as u64);
-            let elapsed = self.previous_instant.elapsed();
+            let elapsed = self.time_since_step.elapsed();
             if !self.paused {
                 if elapsed >= time_per_step {
                     self.step();
-                    self.previous_instant = Instant::now();
+                    self.time_since_step = Instant::now();
                 }
 
                 ui.ctx().request_repaint_after(time_per_step);
@@ -491,7 +499,7 @@ impl eframe::App for AppState {
                     });
                     ui.vertical(|ui| {
                         ui.label("time diff");
-                        ui.label(format!("{:.3?}", elapsed));
+                        ui.label(format!("{elapsed:.3?}"));
                     });
                     for value in &self.befreak_state.stack {
                         ui.label(String::from(*value as u8 as char));
@@ -523,20 +531,41 @@ impl eframe::App for AppState {
                 } => egui::Color32::BLUE,
             };
 
+            let cursor_flash_delay = if self.show_cursor {
+                Duration::from_millis(310u64)
+            } else {
+                Duration::from_millis(295u64)
+            };
+            let elapsed = self.time_since_cursor.elapsed();
+            if elapsed >= cursor_flash_delay {
+                self.show_cursor = !self.show_cursor;
+                self.time_since_cursor = Instant::now();
+            }
+
+            ui.ctx().request_repaint_after(time_per_step);
+
             egui::Grid::new("letter_grid")
                 .spacing([0.0, 0.0])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     for (index_y, row) in self.befreak_state.code.rows_iter().enumerate() {
                         for (index_x, c) in row.enumerate() {
-                            if self.cursor_position == (index_x, index_y) {
+                            if self.show_cursor && self.cursor_position == (index_x, index_y) {
                                 ui.label(
-                                    egui::RichText::new(*c).background_color(egui::Color32::GRAY),
+                                    egui::RichText::new(*c)
+                                        .background_color(egui::Color32::GRAY)
+                                        .family(egui::FontFamily::Monospace),
                                 );
                             } else if self.befreak_state.location == (index_x, index_y) {
-                                ui.label(egui::RichText::new(*c).background_color(position_color));
+                                ui.label(
+                                    egui::RichText::new(*c)
+                                        .background_color(position_color)
+                                        .family(egui::FontFamily::Monospace),
+                                );
                             } else {
-                                ui.label(c.to_string());
+                                ui.label(
+                                    egui::RichText::new(*c).family(egui::FontFamily::Monospace),
+                                );
                             }
                         }
                         ui.end_row();
@@ -783,14 +812,11 @@ impl BefreakState {
             ExecutionState::NotStarted => {
                 if self.direction_reversed {
                     self.reset();
-                    self.state = ExecutionState::Running;
-                } else {
-                    self.state = ExecutionState::Running;
                 }
+                self.state = ExecutionState::Running;
             }
 
-            ExecutionState::Error(..) => (),
-            ExecutionState::Running => (),
+            ExecutionState::Error(..) | ExecutionState::Running => (),
         }
     }
 
