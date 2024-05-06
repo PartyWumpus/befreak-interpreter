@@ -11,13 +11,10 @@ use std::time::Duration;
 // use std::io::{self, BufRead};
 // use std::path::Path;
 
-// TODO: add file editing:
-// changing individual characters
+// TODO:
 // changing grid size
-
-// TODO: split stuff into several files
-
-// TODO: make it so turning around on a @ actually works
+// make pasting with newlines functional
+// split stuff into several files
 
 static PRESETS: phf::Map<&'static str, &'static str> = phf_map! {
 "hello world 1" =>r#"
@@ -190,7 +187,7 @@ struct BefreakState {
 pub struct AppState {
     befreak_state: BefreakState,
     speed: f32,
-    //cursor_position: (usize, usize),
+    cursor_position: (usize, usize),
     paused: bool,
     previous_instant: Instant,
     extra: bool,
@@ -207,7 +204,7 @@ impl AppState {
             befreak_state: BefreakState::new_empty(),
             //state: State::new_load_file("primes1"),
             text_channel: channel(),
-            //cursor_position: (0, 0), //TODO: use this for editing
+            cursor_position: (0, 0),
             previous_instant: Instant::now(),
             paused: true,
             extra: false,
@@ -316,6 +313,59 @@ impl eframe::App for AppState {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            let mut direction = None;
+            if ui.input(|e| e.key_pressed(egui::Key::ArrowDown)) {
+                direction = Some(Direction::South);
+            } else if ui.input(|e| e.key_pressed(egui::Key::ArrowUp)) {
+                direction = Some(Direction::North);
+            } else if ui.input(|e| e.key_pressed(egui::Key::ArrowLeft)) {
+                direction = Some(Direction::West);
+            } else if ui.input(|e| e.key_pressed(egui::Key::ArrowRight)) {
+                direction = Some(Direction::East);
+            } else {
+                ui.input(|e| {
+                    for event in e.filtered_events(&egui::EventFilter {
+                        tab: true,
+                        escape: false,
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                    }) {
+                        match event {
+                            egui::Event::Text(text) | egui::Event::Paste(text) => {
+                                for char in text.chars() {
+                                    let _ = self.befreak_state.code.set(
+                                        self.cursor_position.1,
+                                        self.cursor_position.0,
+                                        char,
+                                    );
+                                    if self.cursor_position
+                                        == (
+                                            self.befreak_state.code.row_len() - 1,
+                                            self.befreak_state.code.column_len() - 1,
+                                        )
+                                    {
+                                        self.cursor_position = (0, 0);
+                                    } else if self.cursor_position.0
+                                        >= self.befreak_state.code.row_len() - 1
+                                    {
+                                        self.cursor_position = (0, self.cursor_position.1 + 1);
+                                    } else {
+                                        self.cursor_position =
+                                            (self.cursor_position.0 + 1, self.cursor_position.1);
+                                    }
+                                }
+                            }
+                            _ => (),
+                        }
+                    }
+                });
+            }
+
+            if let Some(direction) = direction {
+                self.cursor_position = self
+                    .befreak_state
+                    .move_location(self.cursor_position, direction)
+            }
             let time_per_step = Duration::from_millis((500.0 - 49.0 * self.speed) as u64);
             let elapsed = self.previous_instant.elapsed();
             if !self.paused {
@@ -450,8 +500,7 @@ impl eframe::App for AppState {
                 ui.separator();
             }
 
-            //TODO: different colours depending on state?
-            let cursor_color = match self.befreak_state {
+            let position_color = match self.befreak_state {
                 BefreakState {
                     inverse_mode: true,
                     string_mode: true,
@@ -480,8 +529,12 @@ impl eframe::App for AppState {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     for (index_y, row) in self.befreak_state.code.rows_iter().enumerate() {
                         for (index_x, c) in row.enumerate() {
-                            if self.befreak_state.location == (index_x, index_y) {
-                                ui.label(egui::RichText::new(*c).background_color(cursor_color));
+                            if self.cursor_position == (index_x, index_y) {
+                                ui.label(
+                                    egui::RichText::new(*c).background_color(egui::Color32::GRAY),
+                                );
+                            } else if self.befreak_state.location == (index_x, index_y) {
+                                ui.label(egui::RichText::new(*c).background_color(position_color));
                             } else {
                                 ui.label(c.to_string());
                             }
@@ -645,7 +698,6 @@ impl BefreakState {
     }
 
     fn get_instruction(&self, location: (usize, usize)) -> Result<&char, BefreakError> {
-        // TODO: make movement wrap around, as that appears to be the intended behaviour
         self.code
             .get(location.1, location.0)
             .ok_or(BefreakError::InvalidPosition)
@@ -683,18 +735,39 @@ impl BefreakState {
         Ok(())
     }
 
-    fn move_location(&mut self) {
-        let Self {
-            location,
-            direction,
-            ..
-        } = self;
-        self.location = match direction {
-            Direction::North => (location.0, location.1 - 1),
-            Direction::South => (location.0, location.1 + 1),
-            Direction::East => (location.0 + 1, location.1),
-            Direction::West => (location.0 - 1, location.1),
+    fn move_location(&self, location: (usize, usize), direction: Direction) -> (usize, usize) {
+        let loc;
+        match direction {
+            Direction::North => {
+                if location.1 == 0 {
+                    loc = (location.0, self.code.column_len() - 1);
+                } else {
+                    loc = (location.0, location.1 - 1);
+                }
+            }
+            Direction::South => {
+                if location.1 + 1 >= self.code.column_len() {
+                    loc = (location.0, 0);
+                } else {
+                    loc = (location.0, location.1 + 1);
+                }
+            }
+            Direction::West => {
+                if location.0 == 0 {
+                    loc = (self.code.row_len() - 1, location.1);
+                } else {
+                    loc = (location.0 - 1, location.1);
+                }
+            }
+            Direction::East => {
+                if location.0 + 1 >= self.code.row_len() {
+                    loc = (0, location.1);
+                } else {
+                    loc = (location.0 + 1, location.1);
+                }
+            }
         };
+        loc
     }
 
     // TODO: this is a shit name. rename it
@@ -735,7 +808,7 @@ impl BefreakState {
     fn step(&mut self) -> Result<(), BefreakError> {
         // http://tunes.org/~iepos/befreak.html#reference
 
-        self.move_location();
+        self.location = self.move_location(self.location, self.direction);
 
         if self.direction_reversed {
             self.step -= 1;
