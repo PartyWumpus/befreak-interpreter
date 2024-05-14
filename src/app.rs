@@ -13,8 +13,10 @@ use std::time::Duration;
 
 // TODO:
 // changing grid size
-// make pasting with newlines functional
+// make pasting with newlines functional maybe
 // split stuff into several files
+// fix adding/removing start points
+// figure out a better way to format the stack ui so they don't overflow
 
 static PRESETS: phf::Map<&'static str, &'static str> = phf_map! {
 "hello world 1" =>r#"
@@ -629,10 +631,30 @@ impl BefreakState {
         }
     }*/
 
+    fn new(location: (usize, usize), code: Array2D<char>) -> Self {
+        Self {
+            location,
+            code,
+            start_pos: location,
+
+            stack: vec![],
+            control_stack: vec![],
+            direction: Direction::East,
+            output_stack: vec![],
+            direction_reversed: false,
+            inverse_mode: false,
+            string_mode: false,
+            number_stack: vec![],
+            step: 0,
+            state: ExecutionState::NotStarted,
+        }
+    }
+
     fn new_from_string(data: &str) -> Self {
         let mut lines = vec![];
         let max_length = data.lines().map(str::len).max().unwrap();
         for line in data.lines() {
+            // TODO: this is dumb don't just
             // skip lines with no content
             if !line.is_empty() {
                 let mut x = line.chars().collect::<Vec<char>>();
@@ -644,22 +666,7 @@ impl BefreakState {
 
         match Self::get_start_pos(&code) {
             None => panic!("No start position"),
-            Some(location) => Self {
-                location,
-                code,
-                start_pos: location,
-
-                stack: vec![],
-                control_stack: vec![],
-                direction: Direction::East,
-                output_stack: vec![],
-                direction_reversed: false,
-                inverse_mode: false,
-                string_mode: false,
-                number_stack: vec![],
-                step: 0,
-                state: ExecutionState::NotStarted,
-            },
+            Some(location) => Self::new(location, code),
         }
     }
 
@@ -667,42 +674,12 @@ impl BefreakState {
         let mut code = Array2D::filled_with(' ', 10, 10);
         let _ = code.set(1, 1, '@');
 
-        Self {
-            location: (1, 1),
-            code,
-            start_pos: (1, 1),
-
-            stack: vec![],
-            control_stack: vec![],
-            direction: Direction::East,
-            output_stack: vec![],
-            direction_reversed: false,
-            inverse_mode: false,
-            string_mode: false,
-            number_stack: vec![],
-            step: 0,
-            state: ExecutionState::NotStarted,
-        }
+        Self::new((1,1), code)
     }
 
     fn reset(&mut self) {
-        *self = Self {
-            location: self.start_pos,
-            start_pos: self.start_pos,
-            code: self.code.clone(),
-
-            // TODO: I NEED A PARTIAL DEFAULT PLEASE
-            stack: vec![],
-            control_stack: vec![],
-            direction: Direction::East,
-            output_stack: vec![],
-            direction_reversed: false,
-            inverse_mode: false,
-            string_mode: false,
-            number_stack: vec![],
-            step: 0,
-            state: ExecutionState::NotStarted,
-        }
+        // TODO: remove the clone here, maybe check if this is optimized out or not.
+        *self = Self::new(self.start_pos, self.code.clone())
     }
 
     fn serialize(&self) -> String {
