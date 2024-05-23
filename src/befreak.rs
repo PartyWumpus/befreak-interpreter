@@ -1,16 +1,27 @@
 use array2d::Array2D;
+use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum BefreakError {
+    #[error("Tried to enter a position outside the grid")]
     InvalidPosition,
+    #[error("Tried to run an invalid operator")]
     InvalidOperation,
+    #[error("Tried to pop off the stack but it was empty")]
     EmptyMainStack,
+    #[error("Tried to pop off the control stack but it was empty")]
     EmptyControlStack,
+    #[error("Tried to pop off the output stack but it was empty")]
     EmptyOutputStack,
+    #[error("Tried to use the control stack but a non boolean value was at the top")]
     NonBoolInControlStack,
+    #[error("Tried to unduplicate the top two values but they were not identical")]
     InvalidUnduplicate,
+    #[error("Tried to pop a value off the stack but it was not a zero")]
     InvalidPopZero,
+    #[error("Tried to do under but the top and third values were not identical")]
     InvalidUnder,
+    #[error("Tried to remove a string but it did not match")]
     InvalidStringRemoval,
 }
 
@@ -48,32 +59,6 @@ pub struct BefreakState {
 
     // constants
     pub code: Array2D<char>,
-}
-
-impl std::error::Error for BefreakError {}
-
-impl std::fmt::Display for BefreakError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let str = match self {
-            Self::InvalidPosition => "Tried to enter a position outside the grid",
-            Self::InvalidOperation => "Tried to run an invalid operator",
-            Self::EmptyMainStack => "Tried to pop off the stack but it was empty",
-            Self::EmptyControlStack => "Tried to pop off the control stack but it was empty",
-            Self::EmptyOutputStack => "Tried to pop off the output stack but it was empty",
-            Self::NonBoolInControlStack => {
-                "Tried to use the control stack but a non boolean value was at the top"
-            }
-            Self::InvalidUnduplicate => {
-                "Tried to unduplicate the top two values but they were not identical"
-            }
-            Self::InvalidPopZero => "Tried to pop a value off the stack but it was not a zero",
-            Self::InvalidUnder => {
-                "Tried to do under but the top and third values were not identical"
-            }
-            Self::InvalidStringRemoval => "Tried to remove a string but it did not match",
-        };
-        write!(f, "{str}")
-    }
 }
 
 impl BefreakState {

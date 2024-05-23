@@ -25,6 +25,7 @@ futures = "0.3.30"
 rfd = "0.14.1"
 instant = { version = "0.1.12", features = [ "wasm-bindgen"] }
 phf = { version = "0.11.2", features = [ "macros" ] }
+thiserror = "1.0.61"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

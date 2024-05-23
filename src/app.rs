@@ -15,7 +15,7 @@ use crate::befreak::{BefreakState, Direction, ExecutionState};
 // TODO:
 // changing grid size
 // make pasting with newlines functional maybe
-// split stuff into several files
+// make a CLI interface
 // fix adding/removing start points
 // figure out a better way to format the stack ui so they don't overflow
 
