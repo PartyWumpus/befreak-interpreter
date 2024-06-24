@@ -121,6 +121,7 @@ pub struct AppState {
     show_cursor: bool,
     extra: bool,
     text_channel: (Sender<String>, Receiver<String>),
+    hyperspeed: bool,
 }
 
 impl AppState {
@@ -139,6 +140,7 @@ impl AppState {
             show_cursor: true,
             extra: false,
             speed: 5.0,
+            hyperspeed: false,
         }
     }
 
@@ -303,12 +305,17 @@ impl eframe::App for AppState {
             let time_per_step = Duration::from_millis((500.0 - 49.0 * self.speed) as u64);
             let elapsed = self.time_since_step.elapsed();
             if !self.paused {
-                if elapsed >= time_per_step {
+                if self.hyperspeed {
                     self.step();
-                    self.time_since_step = Instant::now();
-                }
+                    ui.ctx().request_repaint();
+                } else {
+                    if elapsed >= time_per_step {
+                        self.step();
+                        self.time_since_step = Instant::now();
+                    }
 
-                ui.ctx().request_repaint_after(time_per_step);
+                    ui.ctx().request_repaint_after(time_per_step);
+                }
             }
 
             // The central panel the region left after adding TopPanel's and SidePanel's
@@ -359,6 +366,9 @@ impl eframe::App for AppState {
                     self.paused = true;
                 }
                 ui.add(egui::Slider::new(&mut self.speed, 1.0..=10.0).text("speed"));
+                if ui.button("max speed").clicked() {
+                    self.hyperspeed = !self.hyperspeed;
+                }
             });
 
             ui.separator();
