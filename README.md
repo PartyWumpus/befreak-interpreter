@@ -5,6 +5,8 @@
 
 This is a [befreak](http://tunes.org/~iepos/befreak.html) interpreter (an esoteric language from 2003) written in rust 🦀.
 
+![image](https://github.com/user-attachments/assets/5ab19fca-a1bd-47a8-b94d-7327517a879b)
+
 You can try it out at <https://partywumpus.github.io/befreak-interpreter>.
 
 The main gimmick of the language, beyond being 2D, is that it is fully reversible. 
